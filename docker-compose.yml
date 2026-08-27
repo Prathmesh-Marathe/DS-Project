@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: derrcs-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - derrcs-network
+
+  registry-service:
+    build: ./services/registry-service
+    container_name: derrcs-registry
+    ports:
+      - "5000:5000"
+    networks:
+      - derrcs-network
+    restart: always
+
+  broker-signaling:
+    build: ./services/broker-signaling
+    container_name: derrcs-broker-signaling
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+      - "5004:5004"
+    networks:
+      - derrcs-network
+    restart: always
+
+  resource-service:
+    build: ./services/resource-service
+    container_name: derrcs-resource
+    ports:
+      - "5003:5003"
+    environment:
+      - PORT=5003
+      - REGISTRY_URL=http://registry-service:5000
+      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+    depends_on:
+      - mongodb
+      - registry-service
+    networks:
+      - derrcs-network
+    restart: always
+
+  incident-service:
+    build: ./services/incident-service
+    container_name: derrcs-incident
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+      - REGISTRY_URL=http://registry-service:5000
+      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      - MQTT_URL=mqtt://broker-signaling:1883
+    depends_on:
+      - mongodb
+      - registry-service
+      - broker-signaling
+    networks:
+      - derrcs-network
+    restart: always
+
+  dispatch-service:
+    build: ./services/dispatch-service
+    container_name: derrcs-dispatch
+    ports:
+      - "5002:5002"
+    environment:
+      - PORT=5002
+      - REGISTRY_URL=http://registry-service:5000
+      - MQTT_URL=mqtt://broker-signaling:1883
+    depends_on:
+      - registry-service
+      - broker-signaling
+    networks:
+      - derrcs-network
+    restart: always
+
+  frontend:
+    build: ./frontend
+    container_name: derrcs-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - registry-service
+      - broker-signaling
+      - resource-service
+      - incident-service
+      - dispatch-service
+    networks:
+      - derrcs-network
+    restart: always
+
+networks:
+  derrcs-network:
+    driver: bridge
+
+volumes:
+  mongo-data:
