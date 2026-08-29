@@ -130,7 +130,7 @@ app.listen(PORT, async () => {
     await axios.post(`${REGISTRY_URL}/register`, {
       type: 'service',
       name: 'dispatch-service',
-      url: `http://localhost:${PORT}`
+      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
     });
     console.log('[Dispatch Service] Self-registered with Naming Registry successfully');
   } catch (err) {

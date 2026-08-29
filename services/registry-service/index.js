@@ -89,7 +89,13 @@ app.post('/responders/:id/update', (req, res) => {
   const { location, status } = req.body;
   
   if (!responders[id]) {
-    responders[id] = { id, name: id, type: 'ambulance', lastUpdated: new Date() };
+    responders[id] = { 
+      id, 
+      name: id, 
+      type: 'ambulance', 
+      location: { lat: 12.9716, lng: 77.5946 }, // Default location to prevent frontend crash
+      lastUpdated: new Date() 
+    };
   }
 
   if (location) responders[id].location = location;

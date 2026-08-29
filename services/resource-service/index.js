@@ -139,7 +139,7 @@ app.get('/resources/nearest', async (req, res) => {
     // Map with distance and sort
     const sorted = filtered.map(r => {
       const distance = calculateDistance(userLat, userLng, r.location.lat, r.location.lng);
-      return { ...r, distance };
+      return { ...(r.toObject ? r.toObject() : r), distance };
     }).sort((a, b) => a.distance - b.distance);
 
     res.json(sorted);
@@ -256,7 +256,7 @@ app.listen(PORT, async () => {
     await axios.post(`${REGISTRY_URL}/register`, {
       type: 'service',
       name: 'resource-service',
-      url: `http://localhost:${PORT}`
+      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
     });
     console.log('[Resource Service] Self-registered with Naming Registry successfully');
   } catch (err) {

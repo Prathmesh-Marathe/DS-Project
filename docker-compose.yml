@@ -40,6 +40,7 @@ services:
       - PORT=5003
       - REGISTRY_URL=http://registry-service:5000
       - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      - SERVICE_URL=http://resource-service:5003
     depends_on:
       - mongodb
       - registry-service
@@ -57,6 +58,7 @@ services:
       - REGISTRY_URL=http://registry-service:5000
       - MONGODB_URI=mongodb://mongodb:27017/derrcs
       - MQTT_URL=mqtt://broker-signaling:1883
+      - SERVICE_URL=http://incident-service:5001
     depends_on:
       - mongodb
       - registry-service
@@ -74,6 +76,7 @@ services:
       - PORT=5002
       - REGISTRY_URL=http://registry-service:5000
       - MQTT_URL=mqtt://broker-signaling:1883
+      - SERVICE_URL=http://dispatch-service:5002
     depends_on:
       - registry-service
       - broker-signaling

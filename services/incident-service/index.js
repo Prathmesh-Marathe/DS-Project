@@ -216,7 +216,7 @@ app.listen(PORT, async () => {
     await axios.post(`${REGISTRY_URL}/register`, {
       type: 'service',
       name: 'incident-service',
-      url: `http://localhost:${PORT}`
+      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
     });
     console.log('[Incident Service] Self-registered with Naming Registry successfully');
   } catch (err) {

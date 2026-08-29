@@ -7,7 +7,7 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
-    "aedes": "latest",
+    "aedes": "^0.42.0",
     "cors": "^2.8.5",
     "derrcs-root": "file:../..",
     "express": "^4.19.2",

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import io from 'socket.io-client';
 import mqtt from 'mqtt';
 import { 
@@ -31,8 +31,14 @@ const MAP_LAT_MAX = 13.05;
 const MAP_LNG_MIN = 77.50;
 const MAP_LNG_MAX = 77.65;
 
-const latToY = (lat) => 450 - ((lat - MAP_LAT_MIN) / (MAP_LAT_MAX - MAP_LAT_MIN)) * 400;
-const lngToX = (lng) => 50 + ((lng - MAP_LNG_MIN) / (MAP_LNG_MAX - MAP_LNG_MIN)) * 700;
+const latToY = (lat) => {
+  const v = Number(lat);
+  return isNaN(v) ? 250 : 450 - ((v - MAP_LAT_MIN) / (MAP_LAT_MAX - MAP_LAT_MIN)) * 400;
+};
+const lngToX = (lng) => {
+  const v = Number(lng);
+  return isNaN(v) ? 400 : 50 + ((v - MAP_LNG_MIN) / (MAP_LNG_MAX - MAP_LNG_MIN)) * 700;
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('citizen');
@@ -42,11 +48,15 @@ export default function App() {
   const [resources, setResources] = useState([]);
   const [responders, setResponders] = useState([]);
   
-  // Socket.IO & MQTT Clients
+  // Socket.IO & MQTT Clients — stored in refs so StrictMode double-mount doesn't create duplicate connections
   const [socket, setSocket] = useState(null);
   const [mqttClient, setMqttClient] = useState(null);
   const [mqttConnected, setMqttConnected] = useState(false);
   const [socketConnected, setSocketConnected] = useState(false);
+  const mqttClientRef = useRef(null);
+  const socketRef = useRef(null);
+  // Ref to always read the latest currentResponderId inside MQTT callbacks without re-creating the connection
+  const currentResponderIdRef = useRef('station-1');
 
   // Citizen Panel State
   const [citizenName, setCitizenName] = useState('John Doe');
@@ -56,6 +66,16 @@ export default function App() {
   const [citizenCallState, setCitizenCallState] = useState('idle'); // idle, calling, connected
   const [callRoomId, setCallRoomId] = useState(null);
   
+  // Toast Notifications
+  const [toasts, setToasts] = useState([]);
+  const addToast = (message, type = 'success') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 4000);
+  };
+  
   // Dispatch Panel State
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
   const [nearestResources, setNearestResources] = useState([]);
@@ -64,6 +84,8 @@ export default function App() {
   // Responder Panel State
   const [currentResponderId, setCurrentResponderId] = useState('station-1'); // matches initialized resources
   const [responderStatus, setResponderStatus] = useState('Available');
+  // Keep the ref in sync whenever state changes
+  useEffect(() => { currentResponderIdRef.current = currentResponderId; }, [currentResponderId]);
   const [isOffline, setIsOffline] = useState(false);
   const [offlineQueue, setOfflineQueue] = useState([]);
   const [responderLat, setResponderLat] = useState(12.9716);
@@ -109,9 +131,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Initialize Socket.IO connection
+  // Initialize Socket.IO connection — guarded with ref so StrictMode double-mount creates only one socket
   useEffect(() => {
-    const s = io(SIGNALING_URL);
+    if (socketRef.current) return; // already initialized
+
+    const s = io(SIGNALING_URL, { reconnection: true, reconnectionDelay: 1000 });
+    socketRef.current = s;
     setSocket(s);
 
     s.on('connect', () => {
@@ -141,29 +166,39 @@ export default function App() {
     });
 
     return () => {
-      s.disconnect();
+      // Only truly disconnect on full unmount (not StrictMode remount)
+      // We intentionally leave the socket alive via the ref guard above
     };
   }, []);
 
-  // Initialize MQTT Client over Websockets
+  // Initialize MQTT Client over Websockets — guarded with ref so StrictMode double-mount creates only one connection
+  // currentResponderId is intentionally NOT a dependency; we use currentResponderIdRef inside the message handler instead
   useEffect(() => {
     if (isOffline) {
-      if (mqttClient) {
-        mqttClient.end();
+      if (mqttClientRef.current) {
+        mqttClientRef.current.end(true);
+        mqttClientRef.current = null;
         setMqttClient(null);
         setMqttConnected(false);
       }
       return;
     }
 
+    if (mqttClientRef.current) return; // already initialized
+
     console.log('Connecting to MQTT over Websockets:', MQTT_WS_URL);
-    const client = mqtt.connect(MQTT_WS_URL, { clientId: 'frontend-dashboard-' + Math.random().toString(16).substr(2, 8) });
+    const client = mqtt.connect(MQTT_WS_URL, {
+      clientId: 'frontend-dashboard-' + Math.random().toString(16).substr(2, 8),
+      reconnectPeriod: 2000,   // auto-reconnect every 2 seconds if dropped
+      connectTimeout: 10000,
+      keepalive: 30
+    });
+    mqttClientRef.current = client;
     setMqttClient(client);
 
     client.on('connect', () => {
       setMqttConnected(true);
       console.log('MQTT Connected via Websockets');
-      // Subscribe to incident broadcasts and location updates
       client.subscribe('incidents/new/+');
       client.subscribe('incidents/update/+');
       client.subscribe('responders/+/location');
@@ -172,7 +207,8 @@ export default function App() {
     });
 
     client.on('message', (topic, message) => {
-      const payload = JSON.parse(message.toString());
+      let payload;
+      try { payload = JSON.parse(message.toString()); } catch { return; }
       console.log(`[MQTT Receive] ${topic}:`, payload);
 
       if (topic.startsWith('incidents/new/')) {
@@ -189,21 +225,21 @@ export default function App() {
           return prev.map(r => r.id === payload.id ? { ...r, location: payload.location, lastUpdated: new Date() } : r);
         });
       } else if (topic.startsWith('responders/') && topic.endsWith('/assignment')) {
-        if (payload.responderId === currentResponderId) {
+        // Use ref so we always get the latest responderId without recreating the connection
+        if (payload.responderId === currentResponderIdRef.current) {
           setAssignedIncident(payload.incident);
           setResponderStatus('Dispatched');
         }
       }
     });
 
-    client.on('close', () => {
-      setMqttConnected(false);
-    });
+    client.on('reconnect', () => console.log('[MQTT] Reconnecting...'));
+    client.on('close', () => setMqttConnected(false));
+    client.on('error', (err) => console.error('[MQTT] Error:', err.message));
 
-    return () => {
-      client.end();
-    };
-  }, [isOffline, currentResponderId]);
+    // No cleanup needed — the ref guard keeps this connection alive for the app lifetime
+    return () => {};
+  }, [isOffline]);
 
   // Handle Dispatch Selection lookup for Nearest Resources
   useEffect(() => {
@@ -211,7 +247,11 @@ export default function App() {
     const selected = incidents.find(i => i.id === selectedIncidentId);
     if (!selected) return;
 
-    fetch(`${RESOURCE_URL}/resources/nearest?type=${selected.type}&lat=${selected.location.lat}&lng=${selected.location.lng}`)
+    // Map incident type to resource type (medical incidents need ambulance resources)
+    const resourceTypeMap = { medical: 'ambulance', fire: 'fire', police: 'police' };
+    const resourceType = resourceTypeMap[selected.type] || selected.type;
+
+    fetch(`${RESOURCE_URL}/resources/nearest?type=${resourceType}&lat=${selected.location.lat}&lng=${selected.location.lng}`)
       .then(r => r.json())
       .then(data => setNearestResources(data))
       .catch(e => console.error('Error loading nearest resources', e));
@@ -336,10 +376,10 @@ export default function App() {
 
       console.log('Incident reported via REST API:', res);
       refreshData();
-      alert(`Incident reported! ID: ${res.id}`);
+      addToast(`Incident reported! ID: ${res.id}`);
     } catch (err) {
       console.error('Failed to post incident via REST:', err);
-      alert('Error connecting to incident-service');
+      addToast('Error connecting to incident-service', 'error');
     }
   };
 
@@ -359,14 +399,14 @@ export default function App() {
 
       const data = await res.json();
       if (res.ok) {
-        alert('Resource successfully assigned!');
+        addToast('Resource successfully assigned!');
         refreshData();
       } else {
-        alert(`Failed to assign: ${data.error}`);
+        addToast(`Failed to assign: ${data.error}`, 'error');
       }
     } catch (err) {
       console.error('Dispatch assignment failed:', err);
-      alert('Network error connecting to dispatch-service');
+      addToast('Network error connecting to dispatch-service', 'error');
     }
   };
 
@@ -465,26 +505,26 @@ export default function App() {
         }
       });
       setOfflineQueue([]);
-      alert('System reconnected. Write-ahead queue flushed and synced successfully!');
+      addToast('System reconnected. Write-ahead queue flushed and synced successfully!');
     } else {
       setIsOffline(true);
-      alert('Network drop simulated. Device now operating in offline stand-alone mode.');
+      addToast('Network drop simulated. Device now operating in offline stand-alone mode.');
     }
   };
 
   // Responder: Simulate P2P Edge Relay (Unit 2 P2P messaging)
   const triggerP2PRelay = () => {
     if (offlineQueue.length === 0) {
-      alert('Write-ahead queue is empty. Nothing to relay.');
+      addToast('Write-ahead queue is empty. Nothing to relay.');
       return;
     }
     if (!peerRelayTarget) {
-      alert('Please specify a nearby online Responder ID to relay through.');
+      addToast('Please specify a nearby online Responder ID to relay through.');
       return;
     }
 
     // Simulate WebRTC data channel transfer
-    alert(`Transferring ${offlineQueue.length} queued events to neighboring node: ${peerRelayTarget} via P2P relay...`);
+    addToast(`Transferring ${offlineQueue.length} queued events to neighboring node: ${peerRelayTarget} via P2P relay...`);
     
     // Simulate target node forwarding the queue on our behalf
     offlineQueue.forEach((evt) => {
@@ -505,7 +545,21 @@ export default function App() {
     });
 
     setOfflineQueue([]);
-    alert('Relay complete! Local queue cleared.');
+    addToast('Relay complete! Local queue cleared.');
+  };
+
+  // Helper: Get context-aware labels per resource type
+  const getResourceLabels = (type) => {
+    switch (type) {
+      case 'ambulance':
+        return { unit: 'Ambulance', claimLabel: 'Deploy Unit', releaseLabel: 'Return Unit', capacityLabel: 'Available Units', icon: '🚑', color: '#8b5cf6' };
+      case 'fire':
+        return { unit: 'Fire Engine', claimLabel: 'Deploy Engine', releaseLabel: 'Return Engine', capacityLabel: 'Available Engines', icon: '🚒', color: '#ef4444' };
+      case 'police':
+        return { unit: 'Patrol Car', claimLabel: 'Deploy Patrol', releaseLabel: 'Return Patrol', capacityLabel: 'Available Patrols', icon: '🚓', color: '#3b82f6' };
+      default:
+        return { unit: 'Unit', claimLabel: 'Deploy', releaseLabel: 'Return', capacityLabel: 'Available', icon: '📦', color: '#10b981' };
+    }
   };
 
   // Stations: Simulating manual station capacity changes
@@ -523,7 +577,7 @@ export default function App() {
       });
       refreshData();
     } catch (e) {
-      alert('Error updating capacity endpoint');
+      addToast('Error updating capacity endpoint', 'error');
     }
   };
 
@@ -531,33 +585,31 @@ export default function App() {
     <div className="app-container">
       {/* Header */}
       <header className="header">
-        <div className="logo-section">
-          <div className="logo-icon">
-            <ShieldAlert size={22} color="white" />
+        <div className="header-top">
+          <div className="logo-section">
+            <div className="logo-icon">
+              <ShieldAlert size={22} color="white" />
+            </div>
+            <div className="logo-text">
+              <h1>DERRCS Console</h1>
+              <p>Distributed Emergency Response & Resource Coordination System</p>
+            </div>
           </div>
-          <div className="logo-text">
-            <h1>DERRCS Console</h1>
-            <p>Distributed Emergency Response & Resource Coordination System</p>
-          </div>
-        </div>
 
-        {/* Network Status indicators */}
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            <Database size={14} color={socketConnected ? '#10b981' : '#ef4444'} />
-            <span style={{ color: socketConnected ? '#10b981' : '#ef4444' }}>
-              Signaling: {socketConnected ? 'Online' : 'Offline'}
-            </span>
+          {/* Network Status indicators */}
+          <div className="status-indicators">
+            <div className="status-chip">
+              <div className={`status-dot ${socketConnected ? 'online' : 'offline'}`} />
+              <span>Signaling</span>
+            </div>
+            <div className="status-chip">
+              <div className={`status-dot ${mqttConnected ? 'online' : 'offline'}`} />
+              <span>MQTT Broker</span>
+            </div>
+            <button className="refresh-btn" onClick={refreshData} title="Refresh data">
+              <RefreshCw size={14} />
+            </button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-            <Activity size={14} color={mqttConnected ? '#10b981' : '#ef4444'} />
-            <span style={{ color: mqttConnected ? '#10b981' : '#ef4444' }}>
-              Broker: {mqttConnected ? 'Connected' : 'Disconnected'}
-            </span>
-          </div>
-          <button className="tab-btn btn-secondary" onClick={refreshData} style={{ padding: '6px 10px' }}>
-            <RefreshCw size={14} />
-          </button>
         </div>
 
         {/* Actor tabs */}
@@ -607,7 +659,7 @@ export default function App() {
                   </div>
                 </div>
                 <button type="submit" className="btn" style={{ marginBottom: '12px' }}>
-                  <Send size={16} /> Report Emergency (REST)
+                  <Send size={16} /> Report Emergency
                 </button>
               </form>
 
@@ -659,28 +711,30 @@ export default function App() {
 
         {activeTab === 'dispatch' && (
           <div className="view-grid-dispatch">
-            {/* Left: Incidents list */}
-            <div className="glass-panel scrollable">
+            {/* Left: Incidents Board */}
+            <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
               <h2>Incidents Board</h2>
-              {incidents.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No active incidents reported.</p>
-              ) : (
-                incidents.map(inc => (
-                  <div 
-                    key={inc.id} 
-                    className={`incident-card ${inc.type} ${selectedIncidentId === inc.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedIncidentId(inc.id)}
-                  >
-                    <div className="incident-card-header">
-                      <span style={{ fontWeight: '700', fontSize: '13px' }}>{inc.id}</span>
-                      <span className={`badge badge-${inc.status.toLowerCase()}`}>{inc.status}</span>
+              <div className="scrollable" style={{ flex: 1, paddingRight: '4px' }}>
+                {incidents.length === 0 ? (
+                  <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>No active incidents reported.</p>
+                ) : (
+                  incidents.slice().reverse().map(inc => (
+                    <div 
+                      key={inc.id} 
+                      className={`incident-card ${inc.type} ${selectedIncidentId === inc.id ? 'selected' : ''}`}
+                      onClick={() => setSelectedIncidentId(inc.id)}
+                    >
+                      <div className="incident-card-header">
+                        <span style={{ fontWeight: '700', fontSize: '13px' }}>{inc.id}</span>
+                        <span className={`badge badge-${inc.status.toLowerCase()}`}>{inc.status}</span>
+                      </div>
+                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Type: {inc.type}</p>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Location: {inc.location?.lat?.toFixed(4) ?? 'N/A'}, {inc.location?.lng?.toFixed(4) ?? 'N/A'}</p>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Reporter: {inc.reportedBy}</p>
                     </div>
-                    <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Type: {inc.type}</p>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Location: {inc.location.lat.toFixed(4)}, {inc.location.lng.toFixed(4)}</p>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Reporter: {inc.reportedBy}</p>
-                  </div>
-                ))
-              )}
+                  ))
+                )}
+              </div>
             </div>
 
             {/* Center: Live Map */}
@@ -706,24 +760,30 @@ export default function App() {
                   ))}
 
                   {/* Active incidents */}
-                  {incidents.filter(inc => inc.status !== 'Resolved').map(inc => (
-                    <g key={inc.id}>
-                      <circle cx={lngToX(inc.location.lng)} cy={latToY(inc.location.lat)} r={12} fill="rgba(239, 68, 68, 0.2)" className="blinker" />
-                      <circle cx={lngToX(inc.location.lng)} cy={latToY(inc.location.lat)} r={5} fill="#ef4444" />
-                      <text x={lngToX(inc.location.lng) + 10} y={latToY(inc.location.lat) + 4} fill="#ef4444" fontSize="9" fontWeight="bold">{inc.id}</text>
-                    </g>
-                  ))}
+                  {incidents.filter(inc => inc.status !== 'Resolved').map(inc => {
+                    if (!inc.location) return null;
+                    return (
+                      <g key={inc.id}>
+                        <circle cx={lngToX(inc.location.lng)} cy={latToY(inc.location.lat)} r={12} fill="rgba(239, 68, 68, 0.2)" className="blinker" />
+                        <circle cx={lngToX(inc.location.lng)} cy={latToY(inc.location.lat)} r={5} fill="#ef4444" />
+                        <text x={lngToX(inc.location.lng) + 10} y={latToY(inc.location.lat) + 4} fill="#ef4444" fontSize="9" fontWeight="bold">{inc.id}</text>
+                      </g>
+                    );
+                  })}
 
                   {/* Responder GPS coordinates updates */}
-                  {responders.map(resp => (
-                    <g key={resp.id}>
-                      <circle cx={lngToX(resp.location.lat)} cy={latToY(resp.location.lng)} r={7} fill="#10b981" />
-                      <circle cx={lngToX(resp.location.lat)} cy={latToY(resp.location.lng)} r={3} fill="#fff" />
-                      <text x={lngToX(resp.location.lat) + 10} y={latToY(resp.location.lng) + 4} fill="#10b981" fontSize="9" fontWeight="bold">
-                        {resp.id} ({resp.status})
-                      </text>
-                    </g>
-                  ))}
+                  {responders.map(resp => {
+                    if (!resp.location) return null;
+                    return (
+                      <g key={resp.id}>
+                        <circle cx={lngToX(resp.location.lng)} cy={latToY(resp.location.lat)} r={7} fill="#10b981" />
+                        <circle cx={lngToX(resp.location.lng)} cy={latToY(resp.location.lat)} r={3} fill="#fff" />
+                        <text x={lngToX(resp.location.lng) + 10} y={latToY(resp.location.lat) + 4} fill="#10b981" fontSize="9" fontWeight="bold">
+                          {resp.id} ({resp.status})
+                        </text>
+                      </g>
+                    );
+                  })}
                 </svg>
               </div>
             </div>
@@ -737,7 +797,7 @@ export default function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     <div style={{ background: 'rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px' }}>
                       <p style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                        System queries nearest available resource stations from <code>resource-service</code>.
+                        Showing nearest available stations sorted by distance. Click Dispatch to assign.
                       </p>
                     </div>
                     {nearestResources.length === 0 ? (
@@ -879,7 +939,7 @@ export default function App() {
                     <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Coordinates: {assignedIncident.location.lat.toFixed(4)}, {assignedIncident.location.lng.toFixed(4)}</p>
                   </div>
                   <button className="btn btn-success" onClick={() => {
-                    alert('Incident resolved!');
+                    addToast('Incident resolved!');
                     // Call API to resolve incident
                     fetch(`${INCIDENT_URL}/incidents/${assignedIncident.id}/status`, {
                       method: 'PATCH',
@@ -904,27 +964,31 @@ export default function App() {
         {activeTab === 'stations' && (
           <div className="view-grid-station">
             <div className="glass-panel">
-              <h2>Resource Stations Capacity Monitor</h2>
+              <h2>Resource Stations — Live Capacity Monitor</h2>
               <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-                Resource stations manage live capacities (e.g. beds, fire engines). Dispatches trigger automatic decrement via the <code>resource-service</code> REST API. Local adjustments are broadcasted dynamically.
+                Each station manages its own fleet capacity. When a unit is dispatched, capacity is automatically decremented. You can also manually deploy or return units below.
               </p>
               <div className="resource-grid">
                 {resources.map(res => {
                   const percent = (res.availableCount / res.capacity) * 100;
                   const status = percent > 50 ? 'success' : percent > 20 ? 'warning' : 'danger';
+                  const labels = getResourceLabels(res.type);
                   
                   return (
-                    <div key={res.id} className="resource-card">
+                    <div key={res.id} className="resource-card" style={{ borderLeft: `3px solid ${labels.color}` }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: '700', fontSize: '14px' }}>{res.name}</span>
-                        <span className="badge badge-resolved">{res.type}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '18px' }}>{labels.icon}</span>
+                          <span style={{ fontWeight: '700', fontSize: '14px' }}>{res.name}</span>
+                        </div>
+                        <span className={`badge badge-type-${res.type}`}>{res.type}</span>
                       </div>
-                      <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Location: {res.location.lat}, {res.location.lng}</p>
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>📍 {res.location.lat.toFixed(4)}, {res.location.lng.toFixed(4)}</p>
                       
                       <div style={{ marginTop: '8px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: '4px' }}>
-                          <span>Capacity Allocation</span>
-                          <span style={{ fontWeight: 'bold' }}>{res.availableCount} / {res.capacity} Available</span>
+                          <span style={{ color: 'var(--text-secondary)' }}>{labels.capacityLabel}</span>
+                          <span style={{ fontWeight: 'bold' }}>{res.availableCount} / {res.capacity}</span>
                         </div>
                         <div className="capacity-bar-container">
                           <div 
@@ -934,13 +998,23 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Manual adjust buttons (simulate station local updates) */}
+                      {/* Context-aware resource management buttons */}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '12px' }}>
-                        <button className="btn btn-secondary" style={{ padding: '4px 6px', fontSize: '11px' }} onClick={() => adjustCapacity(res.id, -1)}>
-                          Admit Patient (-1)
+                        <button 
+                          className="btn btn-secondary" 
+                          style={{ padding: '6px 8px', fontSize: '11px' }} 
+                          onClick={() => adjustCapacity(res.id, -1)}
+                          disabled={res.availableCount <= 0}
+                        >
+                          {labels.claimLabel}
                         </button>
-                        <button className="btn btn-secondary" style={{ padding: '4px 6px', fontSize: '11px' }} onClick={() => adjustCapacity(res.id, 1)}>
-                          Release Bed (+1)
+                        <button 
+                          className="btn btn-secondary" 
+                          style={{ padding: '6px 8px', fontSize: '11px' }} 
+                          onClick={() => adjustCapacity(res.id, 1)}
+                          disabled={res.availableCount >= res.capacity}
+                        >
+                          {labels.releaseLabel}
                         </button>
                       </div>
                     </div>
@@ -951,6 +1025,29 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Toast Notification Container */}
+      <div style={{ position: 'fixed', bottom: '24px', right: '24px', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '12px', pointerEvents: 'none' }}>
+        {toasts.map(t => (
+          <div key={t.id} style={{
+            background: t.type === 'error' ? 'var(--color-danger)' : 'var(--color-success)',
+            color: '#fff',
+            padding: '14px 20px',
+            borderRadius: '8px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+            fontSize: '14px',
+            fontWeight: '600',
+            animation: 'fadeIn 0.3s ease-out forwards',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            pointerEvents: 'auto'
+          }}>
+            {t.type === 'error' ? <ShieldAlert size={18} /> : <CheckCircle size={18} />}
+            {t.message}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
