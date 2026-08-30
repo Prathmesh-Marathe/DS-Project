@@ -126,14 +126,18 @@ app.listen(PORT, async () => {
   console.log(`Dispatch Service running on port ${PORT}`);
 
   // Dynamic Self-Registration in Naming Registry
-  try {
-    await axios.post(`${REGISTRY_URL}/register`, {
-      type: 'service',
-      name: 'dispatch-service',
-      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
-    });
-    console.log('[Dispatch Service] Self-registered with Naming Registry successfully');
-  } catch (err) {
-    console.error('[Dispatch Service] Self-registration with Registry failed:', err.message);
-  }
+  const registerWithRetry = async () => {
+    try {
+      await axios.post(`${REGISTRY_URL}/register`, {
+        type: 'service',
+        name: 'dispatch-service',
+        url: process.env.SERVICE_URL || `http://localhost:${PORT}`
+      });
+      console.log('[Dispatch Service] Self-registered with Naming Registry successfully');
+    } catch (err) {
+      console.error('[Dispatch Service] Self-registration with Registry failed:', err.message, '- Retrying in 5s...');
+      setTimeout(registerWithRetry, 5000);
+    }
+  };
+  registerWithRetry();
 });

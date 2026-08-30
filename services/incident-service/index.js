@@ -101,6 +101,20 @@ app.get('/incidents', async (req, res) => {
   }
 });
 
+// Clear all incidents
+app.delete('/incidents/clear', async (req, res) => {
+  try {
+    if (useMongo) {
+      await IncidentModel.deleteMany({});
+    } else {
+      fs.writeFileSync(jsonDbPath, JSON.stringify([], null, 2));
+    }
+    res.json({ message: 'All incidents cleared' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Create/Report an incident
 app.post('/incidents', async (req, res) => {
   const { type, location, reportedBy, region } = req.body;
@@ -212,14 +226,18 @@ app.listen(PORT, async () => {
   console.log(`Incident Service running on port ${PORT}`);
 
   // Dynamic Self-Registration in Naming Registry
-  try {
-    await axios.post(`${REGISTRY_URL}/register`, {
-      type: 'service',
-      name: 'incident-service',
-      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
-    });
-    console.log('[Incident Service] Self-registered with Naming Registry successfully');
-  } catch (err) {
-    console.error('[Incident Service] Self-registration with Registry failed:', err.message);
-  }
+  const registerWithRetry = async () => {
+    try {
+      await axios.post(`${REGISTRY_URL}/register`, {
+        type: 'service',
+        name: 'incident-service',
+        url: process.env.SERVICE_URL || `http://localhost:${PORT}`
+      });
+      console.log('[Incident Service] Self-registered with Naming Registry successfully');
+    } catch (err) {
+      console.error('[Incident Service] Self-registration with Registry failed:', err.message, '- Retrying in 5s...');
+      setTimeout(registerWithRetry, 5000);
+    }
+  };
+  registerWithRetry();
 });

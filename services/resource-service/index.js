@@ -35,10 +35,10 @@ let ResourceModel;
 const initJsonDb = () => {
   if (!fs.existsSync(jsonDbPath)) {
     const initialData = [
-      { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 12.9716, lng: 77.5946 }, capacity: 10, availableCount: 10 },
-      { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 12.9916, lng: 77.6146 }, capacity: 5, availableCount: 5 },
-      { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 12.9616, lng: 77.5846 }, capacity: 4, availableCount: 4 },
-      { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 12.9516, lng: 77.6046 }, capacity: 8, availableCount: 8 }
+      { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 10, availableCount: 10 },
+      { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 5, availableCount: 5 },
+      { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 4, availableCount: 4 },
+      { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 8, availableCount: 8 }
     ];
     fs.writeFileSync(jsonDbPath, JSON.stringify(initialData, null, 2));
   }
@@ -76,10 +76,10 @@ const connectDB = async () => {
       const count = await ResourceModel.countDocuments();
       if (count === 0) {
         const initialData = [
-          { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 12.9716, lng: 77.5946 }, capacity: 10, availableCount: 10 },
-          { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 12.9916, lng: 77.6146 }, capacity: 5, availableCount: 5 },
-          { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 12.9616, lng: 77.5846 }, capacity: 4, availableCount: 4 },
-          { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 12.9516, lng: 77.6046 }, capacity: 8, availableCount: 8 }
+          { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 10, availableCount: 10 },
+          { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 5, availableCount: 5 },
+          { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 4, availableCount: 4 },
+          { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 8, availableCount: 8 }
         ];
         await ResourceModel.insertMany(initialData);
         console.log('[Resource Service] Seeded MongoDB with initial resources');
@@ -206,7 +206,7 @@ app.post('/resources/release', async (req, res) => {
   try {
     if (useMongo) {
       const updated = await ResourceModel.findOneAndUpdate(
-        { id: resourceId, availableCount: { $lt: mongoose.col = '$capacity' } }, // Simple schema validation logic
+        { id: resourceId, $expr: { $lt: ["$availableCount", "$capacity"] } },
         { $inc: { availableCount: 1 } },
         { new: true }
       );
@@ -252,14 +252,18 @@ app.listen(PORT, async () => {
   console.log(`Resource Service running on port ${PORT}`);
 
   // Dynamic Self-Registration in Naming Registry
-  try {
-    await axios.post(`${REGISTRY_URL}/register`, {
-      type: 'service',
-      name: 'resource-service',
-      url: process.env.SERVICE_URL || `http://localhost:${PORT}`
-    });
-    console.log('[Resource Service] Self-registered with Naming Registry successfully');
-  } catch (err) {
-    console.error('[Resource Service] Self-registration with Registry failed:', err.message);
-  }
+  const registerWithRetry = async () => {
+    try {
+      await axios.post(`${REGISTRY_URL}/register`, {
+        type: 'service',
+        name: 'resource-service',
+        url: process.env.SERVICE_URL || `http://localhost:${PORT}`
+      });
+      console.log('[Resource Service] Self-registered with Naming Registry successfully');
+    } catch (err) {
+      console.error('[Resource Service] Self-registration with Registry failed:', err.message, '- Retrying in 5s...');
+      setTimeout(registerWithRetry, 5000);
+    }
+  };
+  registerWithRetry();
 });

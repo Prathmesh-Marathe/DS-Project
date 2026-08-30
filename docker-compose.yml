@@ -20,6 +20,23 @@ services:
       - derrcs-network
     restart: always
 
+  auth-service:
+    build: ./services/auth-service
+    container_name: derrcs-auth
+    ports:
+      - "5005:5005"
+    environment:
+      - PORT=5005
+      - REGISTRY_URL=http://registry-service:5000
+      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      - SERVICE_URL=http://auth-service:5005
+    depends_on:
+      - mongodb
+      - registry-service
+    networks:
+      - derrcs-network
+    restart: always
+
   broker-signaling:
     build: ./services/broker-signaling
     container_name: derrcs-broker-signaling
