@@ -33,13 +33,16 @@ let ResourceModel;
 
 // Helper to initialize JSON DB
 const initJsonDb = () => {
-  if (!fs.existsSync(jsonDbPath)) {
-    const initialData = [
-      { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 10, availableCount: 10 },
-      { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 5, availableCount: 5 },
-      { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 4, availableCount: 4 },
-      { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 8, availableCount: 8 }
-    ];
+  const initialData = [
+    { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 20, availableCount: 20 },
+    { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 15, availableCount: 15 },
+    { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 10, availableCount: 10 },
+    { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 18, availableCount: 18 },
+    { id: 'station-5', name: 'Metro General Hospital', type: 'ambulance', location: { lat: 18.5304, lng: 73.8467 }, capacity: 15, availableCount: 15 },
+    { id: 'station-6', name: 'West End Fire Station', type: 'fire', location: { lat: 18.5404, lng: 73.8267 }, capacity: 12, availableCount: 12 },
+    { id: 'station-7', name: 'North District Police HQ', type: 'police', location: { lat: 18.5604, lng: 73.8767 }, capacity: 20, availableCount: 20 }
+  ];
+  if (!fs.existsSync(jsonDbPath) || JSON.parse(fs.readFileSync(jsonDbPath, 'utf8')).length < 7) {
     fs.writeFileSync(jsonDbPath, JSON.stringify(initialData, null, 2));
   }
 };
@@ -76,10 +79,13 @@ const connectDB = async () => {
       const count = await ResourceModel.countDocuments();
       if (count === 0) {
         const initialData = [
-          { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 10, availableCount: 10 },
-          { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 5, availableCount: 5 },
-          { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 4, availableCount: 4 },
-          { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 8, availableCount: 8 }
+          { id: 'station-1', name: 'Hospital Alpha', type: 'ambulance', location: { lat: 18.5204, lng: 73.8567 }, capacity: 20, availableCount: 20 },
+          { id: 'station-2', name: 'City Medical Center', type: 'ambulance', location: { lat: 18.5504, lng: 73.8867 }, capacity: 15, availableCount: 15 },
+          { id: 'station-3', name: 'Fire Station Central', type: 'fire', location: { lat: 18.5104, lng: 73.8367 }, capacity: 10, availableCount: 10 },
+          { id: 'station-4', name: 'Police Precinct 5', type: 'police', location: { lat: 18.4904, lng: 73.8667 }, capacity: 18, availableCount: 18 },
+          { id: 'station-5', name: 'Metro General Hospital', type: 'ambulance', location: { lat: 18.5304, lng: 73.8467 }, capacity: 15, availableCount: 15 },
+          { id: 'station-6', name: 'West End Fire Station', type: 'fire', location: { lat: 18.5404, lng: 73.8267 }, capacity: 12, availableCount: 12 },
+          { id: 'station-7', name: 'North District Police HQ', type: 'police', location: { lat: 18.5604, lng: 73.8767 }, capacity: 20, availableCount: 20 }
         ];
         await ResourceModel.insertMany(initialData);
         console.log('[Resource Service] Seeded MongoDB with initial resources');

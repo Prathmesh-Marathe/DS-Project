@@ -20,7 +20,7 @@ import {
   Lock,
   Trash2
 } from 'lucide-react';
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMapEvents, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Circle, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -158,7 +158,9 @@ export default function App() {
   const [assignedIncident, setAssignedIncident] = useState(null);
   const [peerRelayTarget, setPeerRelayTarget] = useState('');
 
-  // Video streams refs for WebRTC
+  // Video streams state and refs for WebRTC
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const dispatcherRemoteVideoRef = useRef(null);
@@ -172,14 +174,14 @@ export default function App() {
     }
   }, [user]);
 
-  // Sync responder starting location to their station location when selected
+  // Sync responder starting location to their station location when selected or when Available
   useEffect(() => {
     const station = resources.find(r => r.id === currentResponderId);
-    if (station) {
+    if (station && responderStatus === 'Available') {
       setResponderLat(station.location.lat);
       setResponderLng(station.location.lng);
     }
-  }, [currentResponderId, resources]);
+  }, [currentResponderId, resources, responderStatus]);
 
   // Fetch initial data
   const refreshData = async () => {
@@ -230,33 +232,81 @@ export default function App() {
       console.log('[Socket] Disconnected from signaling server');
     });
 
+    s.on('peer-joined', async ({ socketId }) => {
+      console.log('[Socket] Peer joined call room, starting WebRTC negotiation. peerSocketId:', socketId);
+      
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+      
+      const stream = localStreamRef.current;
+      if (stream) {
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      }
+      
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          s.emit('webrtc-signal', { targetSocketId: socketId, signal: { candidate: event.candidate } });
+        }
+      };
+      
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      setCitizenCallState('connected');
+      s.emit('webrtc-signal', { targetSocketId: socketId, signal: { type: 'offer', sdp: offer } });
+    });
+
     s.on('webrtc-signal', async ({ signal, senderSocketId }) => {
       console.log('[Socket] Received WebRTC signal:', signal.type || (signal.candidate ? 'candidate' : 'sdp'), 'from:', senderSocketId);
       if (signal.type === 'incoming-offer') {
-        console.log('[Socket] Processing incoming offer, setting state');
+        console.log('[Socket] Processing incoming offer/call, setting state');
         setDispatchCallState('incoming');
-        setIncomingOffer(signal.offer);
         setCallRoomId(signal.roomId);
         setIncomingCallSocketId(senderSocketId);
         return;
       }
 
-      if (signal.candidate) {
-        if (pcRef.current) {
-          try { 
-            await pcRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate)); 
-            console.log('[WebRTC] Added ICE candidate');
-          } catch(e){ console.error('[WebRTC] Failed to add candidate:', e); }
-        } else {
-          console.log('[WebRTC] Queued ICE candidate (PC not ready)');
-          setIceCandidateQueue(prev => [...prev, signal.candidate]);
+      if (signal.type === 'offer') {
+        console.log('[Socket] Received WebRTC offer from citizen, accepting...');
+        const pc = new RTCPeerConnection();
+        pcRef.current = pc;
+        
+        pc.ontrack = (event) => {
+          console.log('[WebRTC] Received remote stream track!', event.streams);
+          setRemoteStream(event.streams[0]);
+        };
+        
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            s.emit('webrtc-signal', { targetSocketId: senderSocketId, signal: { candidate: event.candidate } });
+          }
+        };
+        
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          s.emit('webrtc-signal', { targetSocketId: senderSocketId, signal: { type: 'answer', sdp: answer } });
+          setDispatchCallState('connected');
+        } catch (e) {
+          console.error('[WebRTC] Failed to set remote description or create answer:', e);
         }
-      } else if (signal.type === 'answer' || signal.sdp) {
+        return;
+      }
+
+      if (signal.type === 'answer' || signal.sdp) {
         if (pcRef.current) {
           try { 
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(signal.sdp || signal)); 
             console.log('[WebRTC] Remote description (answer) set successfully');
           } catch(e){ console.error('[WebRTC] Failed to set remote description:', e); }
+        }
+      } else if (signal.candidate) {
+        if (pcRef.current) {
+          try { 
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(signal.candidate)); 
+            console.log('[WebRTC] Added ICE candidate');
+          } catch(e){ console.error('[WebRTC] Failed to add candidate:', e); }
         }
       }
     });
@@ -358,16 +408,10 @@ export default function App() {
     
     socket.emit('join-call-room', { roomId });
 
-    const pc = new RTCPeerConnection();
-    pcRef.current = pc;
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      setLocalStream(stream);
     } catch (e) {
       console.error('Failed to get user media. Falling back to mock stream.', e);
       addToast('Real camera access failed or blocked', 'error');
@@ -380,25 +424,11 @@ export default function App() {
       ctx.fillRect(0,0,640,480);
       const stream = canvas.captureStream(30);
       localStreamRef.current = stream;
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      setLocalStream(stream);
     }
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit('webrtc-signal', { roomId, signal: { candidate: event.candidate } });
-      }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
     
-    setCitizenCallState('connected');
-    
-    // Broadcast incoming-offer directly to the 'dispatch' room so operators see it and get the offer at the same time
-    socket.emit('webrtc-signal', { roomId: 'dispatch', signal: { type: 'incoming-offer', offer: offer, roomId } });
+    // Broadcast incoming call event directly to the 'dispatch' room so operators see the prompt
+    socket.emit('webrtc-signal', { roomId: 'dispatch', signal: { type: 'incoming-offer', roomId } });
   };
 
   const endCall = () => {
@@ -410,6 +440,8 @@ export default function App() {
       localStreamRef.current.getTracks().forEach(t => t.stop());
       localStreamRef.current = null;
     }
+    setLocalStream(null);
+    setRemoteStream(null);
     setCitizenCallState('idle');
     setDispatchCallState('idle');
     setCallRoomId(null);
@@ -418,58 +450,12 @@ export default function App() {
 
   // Dispatcher: Accept Incoming Call
   const acceptCall = async () => {
-    console.log('[AcceptCall] Starting accept call flow. incomingOffer:', incomingOffer, 'callRoomId:', callRoomId);
-    if (!incomingOffer || !callRoomId) {
-      console.warn('[AcceptCall] Aborting call acceptance. Missing offer or roomId.');
+    console.log('[AcceptCall] Dispatcher accepting call, joining room:', callRoomId);
+    if (!callRoomId) {
+      console.warn('[AcceptCall] Aborting call acceptance. Missing roomId.');
       return;
     }
-
-    console.log('[AcceptCall] Emitting join-call-room for:', callRoomId);
     socket.emit('join-call-room', { roomId: callRoomId });
-
-    console.log('[AcceptCall] Initializing new RTCPeerConnection');
-    const pc = new RTCPeerConnection();
-    pcRef.current = pc;
-
-    pc.ontrack = (event) => {
-      console.log('[WebRTC] Received remote stream track!', event.streams);
-      if (dispatcherRemoteVideoRef.current) {
-        dispatcherRemoteVideoRef.current.srcObject = event.streams[0];
-      }
-    };
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        console.log('[WebRTC] Dispatcher ICE candidate generated, emitting signal');
-        socket.emit('webrtc-signal', { roomId: callRoomId, signal: { candidate: event.candidate } });
-      }
-    };
-
-    try {
-      console.log('[AcceptCall] Setting remote description...');
-      await pc.setRemoteDescription(new RTCSessionDescription(incomingOffer));
-      console.log('[AcceptCall] Remote description set successfully.');
-      
-      console.log('[AcceptCall] Processing queued ICE candidates:', iceCandidateQueue.length);
-      iceCandidateQueue.forEach(async (candidate) => {
-        try { 
-          await pc.addIceCandidate(new RTCIceCandidate(candidate)); 
-          console.log('[AcceptCall] Applied queued ICE candidate');
-        } catch(e) { console.error('[AcceptCall] Failed to apply queued ICE candidate:', e); }
-      });
-      setIceCandidateQueue([]);
-
-      console.log('[AcceptCall] Creating WebRTC answer...');
-      const answer = await pc.createAnswer();
-      console.log('[AcceptCall] Setting local description...');
-      await pc.setLocalDescription(answer);
-      console.log('[AcceptCall] Emitting answer WebRTC signal');
-      socket.emit('webrtc-signal', { roomId: callRoomId, signal: answer });
-      setDispatchCallState('connected');
-      setIncomingOffer(null);
-    } catch (err) {
-      console.error('[AcceptCall] Failed to accept call:', err);
-    }
   };
 
   // Citizen: Report Incident REST call
@@ -737,6 +723,9 @@ export default function App() {
 
   // Determine dispatcher map center dynamically based on selected incident
   const selectedIncident = incidents.find(i => i.id === selectedIncidentId);
+  const selectedResourceType = selectedIncident 
+    ? ({ medical: 'ambulance', fire: 'fire', police: 'police' }[selectedIncident.type] || selectedIncident.type)
+    : null;
   const dispatchMapCenter = selectedIncident?.location 
     ? [selectedIncident.location.lat, selectedIncident.location.lng] 
     : [18.5204, 73.8567];
@@ -815,7 +804,7 @@ export default function App() {
           <Route path="/citizen" element={
             <RequireAuth allowedRoles={['citizen']}>
               <div className="view-grid-citizen">
-                <div className="glass-panel">
+                <div className="glass-panel scrollable">
                   <h2>Report Incident</h2>
                   <form onSubmit={reportIncident}>
                     <div className="form-group">
@@ -861,7 +850,7 @@ export default function App() {
                     )}
                     {citizenCallState !== 'idle' && (
                       <div className="video-call-box">
-                        <video className="video-element" ref={localVideoRef} autoPlay playsInline muted />
+                        <video className="video-element" ref={el => { if (el && localStream) el.srcObject = localStream; }} autoPlay playsInline muted />
                         <div className="call-overlay-text">Local WebRTC Stream</div>
                       </div>
                     )}
@@ -938,14 +927,16 @@ export default function App() {
                       />
                       
                       {/* Resource stations */}
-                      {resources.map(res => (
-                        <Marker key={res.id} position={[res.location.lat, res.location.lng]} icon={stationIcon}>
-                          <Popup>
-                            <strong>{res.name}</strong><br/>
-                            Capacity: {res.availableCount} / {res.capacity}
-                          </Popup>
-                        </Marker>
-                      ))}
+                      {resources
+                        .filter(res => !selectedResourceType || res.type === selectedResourceType)
+                        .map(res => (
+                          <Marker key={res.id} position={[res.location.lat, res.location.lng]} icon={stationIcon}>
+                            <Popup>
+                              <strong>{res.name}</strong><br/>
+                              Capacity: {res.availableCount} / {res.capacity}
+                            </Popup>
+                          </Marker>
+                        ))}
 
                       {/* Active incidents */}
                       {incidents.filter(inc => inc.status !== 'Resolved').map(inc => {
@@ -962,17 +953,57 @@ export default function App() {
                       })}
 
                       {/* Responders */}
-                      {responders.map(resp => {
-                        if (!resp.location) return null;
-                        return (
-                          <Marker key={resp.id} position={[resp.location.lat, resp.location.lng]} icon={responderIcon}>
-                            <Popup>
-                              <strong>Responder: {resp.id}</strong><br/>
-                              Status: {resp.status}
-                            </Popup>
-                          </Marker>
-                        );
-                      })}
+                      {responders
+                        .filter(resp => !selectedResourceType || resp.type === selectedResourceType)
+                        .map(resp => {
+                          if (!resp.location) return null;
+                          return (
+                            <Marker key={resp.id} position={[resp.location.lat, resp.location.lng]} icon={responderIcon}>
+                              <Popup>
+                                <strong>Responder: {resp.id}</strong><br/>
+                                Status: {resp.status}
+                              </Popup>
+                            </Marker>
+                          );
+                        })}
+
+                      {/* Connection paths */}
+                      {responders
+                        .filter(resp => !selectedResourceType || resp.type === selectedResourceType)
+                        .map(resp => {
+                          if (!resp.location) return null;
+                          const station = resources.find(s => s.id === resp.id);
+                          const elements = [];
+                          
+                          if (station) {
+                            elements.push(
+                              <Polyline
+                                key={`path-station-${resp.id}`}
+                                positions={[[resp.location.lat, resp.location.lng], [station.location.lat, station.location.lng]]}
+                                color="#3b82f6"
+                                dashArray="5, 10"
+                                weight={2}
+                                opacity={0.6}
+                              />
+                            );
+                          }
+
+                          if (resp.status === 'Dispatched' || resp.status === 'En Route') {
+                            const activeIncident = incidents.find(i => i.assignedResourceId === resp.id && i.status !== 'Resolved');
+                            if (activeIncident && activeIncident.location) {
+                              elements.push(
+                                <Polyline
+                                  key={`path-incident-${resp.id}`}
+                                  positions={[[resp.location.lat, resp.location.lng], [activeIncident.location.lat, activeIncident.location.lng]]}
+                                  color="#ef4444"
+                                  weight={3}
+                                  opacity={0.8}
+                                />
+                              );
+                            }
+                          }
+                          return elements;
+                        })}
                     </MapContainer>
                   </div>
                 </div>
@@ -1021,7 +1052,7 @@ export default function App() {
                   ) : dispatchCallState === 'connected' ? (
                     <div>
                       <div className="video-call-box">
-                        <video className="video-element" ref={dispatcherRemoteVideoRef} autoPlay playsInline muted />
+                        <video className="video-element" ref={el => { if (el && remoteStream) el.srcObject = remoteStream; }} autoPlay playsInline muted />
                         <div className="call-overlay-text">Incoming WebRTC Stream</div>
                       </div>
                       <button className="btn btn-secondary" style={{ marginTop: '8px' }} onClick={endCall}>
@@ -1129,13 +1160,30 @@ export default function App() {
                       </div>
                       <button className="btn btn-success" onClick={() => {
                         addToast('Incident resolved!');
+                        const station = resources.find(r => r.id === currentResponderId);
+                        const stationLoc = station ? station.location : { lat: 18.5204, lng: 73.8567 };
+
                         fetch(`${INCIDENT_URL}/incidents/${assignedIncident.id}/status`, {
                           method: 'PATCH',
                           headers: { 'Content-Type': 'application/json' },
                           body: JSON.stringify({ status: 'Resolved' })
                         }).then(() => {
+                          fetch(`${RESOURCE_URL}/resources/release`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ resourceId: currentResponderId })
+                          }).catch(e => console.error("Failed to release resource capacity", e));
+
+                          fetch(`${REGISTRY_URL}/responders/${currentResponderId}/update`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ status: 'Available', location: stationLoc })
+                          }).catch(e => console.error("Failed to update registry status", e));
+
                           setAssignedIncident(null);
                           setResponderStatus('Available');
+                          setResponderLat(stationLoc.lat);
+                          setResponderLng(stationLoc.lng);
                           refreshData();
                         });
                       }}>

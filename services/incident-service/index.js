@@ -208,6 +208,45 @@ app.patch('/incidents/:id/status', async (req, res) => {
 
     console.log(`[Incident Service] Updated incident ${id} status to: ${status}`);
 
+    if (status === 'Resolved') {
+      const resourceId = updatedIncident.assignedResourceId;
+      if (resourceId) {
+        try {
+          const resourceServiceUrlRes = await axios.get(`${REGISTRY_URL}/lookup/resource-service`);
+          const resourceServiceUrl = resourceServiceUrlRes.data.url;
+          
+          const resourcesRes = await axios.get(`${resourceServiceUrl}/resources`);
+          const station = resourcesRes.data.find(r => r.id === resourceId);
+          const stationLoc = station ? station.location : { lat: 18.5204, lng: 73.8567 };
+
+          await axios.post(`${resourceServiceUrl}/resources/release`, { resourceId });
+          console.log(`[Incident Service] Released capacity for resource ${resourceId}`);
+
+          await axios.post(`${REGISTRY_URL}/responders/${resourceId}/update`, {
+            status: 'Available',
+            location: stationLoc
+          });
+          console.log(`[Incident Service] Reset responder ${resourceId} status to Available and location to ${JSON.stringify(stationLoc)}`);
+
+          if (mqttClient && mqttClient.connected) {
+            mqttClient.publish(`responders/${resourceId}/location`, JSON.stringify({
+              id: resourceId,
+              location: stationLoc,
+              status: 'Available',
+              timestamp: new Date().toISOString()
+            }));
+            mqttClient.publish(`responders/${resourceId}/status`, JSON.stringify({
+              id: resourceId,
+              status: 'Available',
+              timestamp: new Date().toISOString()
+            }));
+          }
+        } catch (simErr) {
+          console.error('[Incident Service] Failed backend resolution cleanup:', simErr.message);
+        }
+      }
+    }
+
     // Publish update to broker
     if (mqttClient && mqttClient.connected) {
       mqttClient.publish(`incidents/update/${id}`, JSON.stringify(updatedIncident));

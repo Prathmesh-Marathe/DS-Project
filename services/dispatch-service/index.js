@@ -85,11 +85,68 @@ app.post('/dispatch/assign', async (req, res) => {
 
     const updatedIncident = incidentRes.data;
 
-    // 4. Update Responder status in Naming Registry
+    // 4. Update Responder status in Naming Registry and start simulation
     console.log(`[Dispatch Service] Updating responder state in registry...`);
+    
+    // Start background simulation loop in Node.js
+    let currentLat = claimedResource.location.lat;
+    let currentLng = claimedResource.location.lng;
+    const targetLat = updatedIncident.location.lat;
+    const targetLng = updatedIncident.location.lng;
+
+    // Immediately update registry and MQTT with start position (so they start from station!)
     await axios.post(`${REGISTRY_URL}/responders/${resourceId}/update`, {
-      status: 'Dispatched'
+      status: 'Dispatched',
+      location: { lat: currentLat, lng: currentLng }
     });
+
+    const simInterval = setInterval(async () => {
+      const deltaLat = targetLat - currentLat;
+      const deltaLng = targetLng - currentLng;
+      const distance = Math.sqrt(deltaLat * deltaLat + deltaLng * deltaLng);
+
+      if (distance < 0.005) {
+        clearInterval(simInterval);
+        console.log(`[Dispatch Service] Responder ${resourceId} arrived at Incident ${incidentId}`);
+        await axios.post(`${REGISTRY_URL}/responders/${resourceId}/update`, {
+          status: 'On Scene',
+          location: { lat: targetLat, lng: targetLng }
+        });
+        if (mqttClient && mqttClient.connected) {
+          mqttClient.publish(`responders/${resourceId}/location`, JSON.stringify({
+            id: resourceId,
+            location: { lat: targetLat, lng: targetLng },
+            status: 'On Scene',
+            timestamp: new Date().toISOString()
+          }));
+          mqttClient.publish(`responders/${resourceId}/status`, JSON.stringify({
+            id: resourceId,
+            status: 'On Scene',
+            timestamp: new Date().toISOString()
+          }));
+        }
+      } else {
+        const step = distance > 1 ? distance * 0.15 : 0.005;
+        currentLat += Math.sign(deltaLat) * Math.min(Math.abs(deltaLat), step);
+        currentLng += Math.sign(deltaLng) * Math.min(Math.abs(deltaLng), step);
+
+        console.log(`[Dispatch Service] Simulating responder ${resourceId} movement: ${currentLat.toFixed(4)}, ${currentLng.toFixed(4)}`);
+        
+        await axios.post(`${REGISTRY_URL}/responders/${resourceId}/update`, {
+          status: 'En Route',
+          location: { lat: currentLat, lng: currentLng }
+        });
+
+        if (mqttClient && mqttClient.connected) {
+          mqttClient.publish(`responders/${resourceId}/location`, JSON.stringify({
+            id: resourceId,
+            location: { lat: currentLat, lng: currentLng },
+            status: 'En Route',
+            timestamp: new Date().toISOString()
+          }));
+        }
+      }
+    }, 1000);
 
     // 5. Broadcast assignment over Message Broker
     if (mqttClient && mqttClient.connected) {
