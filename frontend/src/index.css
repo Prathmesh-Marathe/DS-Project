@@ -202,11 +202,11 @@ body {
   border-color: rgba(255, 255, 255, 0.12);
 }
 
-/* Main Display */
 .main-content {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   min-height: 0; /* allows grid children to shrink */
   overflow: hidden;
@@ -246,14 +246,10 @@ body {
 
 /* Scrollable Container */
 .scrollable {
-  overflow-y: auto !important;
+  overflow-y: auto;
   max-height: 100%;
   min-height: 0;
   padding-right: 4px;
-}
-
-.glass-panel.scrollable {
-  max-height: calc(100vh - 180px) !important;
 }
 
 .scrollable::-webkit-scrollbar {

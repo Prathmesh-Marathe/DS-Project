@@ -98,6 +98,16 @@ function MapClickHandler({ setLat, setLng }) {
   return null;
 }
 
+const RequireAuth = ({ children, allowedRoles, token, user, location }) => {
+  if (!token || !user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+  if (allowedRoles && !allowedRoles.includes(user.role) && user.role !== 'admin') {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+};
+
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -710,16 +720,7 @@ export default function App() {
     addToast('Logged out');
   };
 
-  // Route protectors
-  const RequireAuth = ({ children, allowedRoles }) => {
-    if (!token || !user) {
-      return <Navigate to="/login" replace state={{ from: location }} />;
-    }
-    if (allowedRoles && !allowedRoles.includes(user.role) && user.role !== 'admin') {
-      return <Navigate to="/" replace />;
-    }
-    return children;
-  };
+  // Route protectors extracted outside component
 
   // Determine dispatcher map center dynamically based on selected incident
   const selectedIncident = incidents.find(i => i.id === selectedIncidentId);
@@ -802,7 +803,7 @@ export default function App() {
           <Route path="/login" element={<LoginPage handleLogin={handleLogin} error={loginError} />} />
           
           <Route path="/citizen" element={
-            <RequireAuth allowedRoles={['citizen']}>
+            <RequireAuth allowedRoles={['citizen']} token={token} user={user} location={location}>
               <div className="view-grid-citizen">
                 <div className="glass-panel scrollable">
                   <h2>Report Incident</h2>
@@ -882,7 +883,7 @@ export default function App() {
           } />
 
           <Route path="/dispatch" element={
-            <RequireAuth allowedRoles={['dispatch']}>
+            <RequireAuth allowedRoles={['dispatch']} token={token} user={user} location={location}>
               <div className="view-grid-dispatch">
                 {/* Left: Incidents Board */}
                 <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column' }}>
@@ -1068,7 +1069,7 @@ export default function App() {
           } />
 
           <Route path="/responder" element={
-            <RequireAuth allowedRoles={['responder']}>
+            <RequireAuth allowedRoles={['responder']} token={token} user={user} location={location}>
               <div className="view-grid-responder">
                 <div className="glass-panel">
                   <h2>Responder Terminal</h2>
@@ -1199,7 +1200,7 @@ export default function App() {
           } />
 
           <Route path="/stations" element={
-            <RequireAuth allowedRoles={['dispatch']}>
+            <RequireAuth allowedRoles={['dispatch']} token={token} user={user} location={location}>
               <div className="view-grid-station" style={{ padding: '24px' }}>
                 <div className="glass-panel">
                   <h2>Resource Stations — Live Capacity Monitor</h2>
