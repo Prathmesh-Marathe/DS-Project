@@ -42,6 +42,52 @@ const incidentIcon = new L.Icon({
   shadowSize: [41, 41]
 });
 
+// Per-type incident icons
+const fireIncidentIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-orange.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
+
+const policeIncidentIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-violet.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
+
+const medicalIncidentIcon = new L.Icon({
+  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41]
+});
+
+const getIncidentIcon = (type) => {
+  switch ((type || '').toLowerCase()) {
+    case 'fire':    return fireIncidentIcon;
+    case 'police':  return policeIncidentIcon;
+    case 'medical': return medicalIncidentIcon;
+    default:        return incidentIcon;
+  }
+};
+
+// Selected incident icon - larger and with pulsing effect
+const selectedIncidentIcon = new L.DivIcon({
+  className: 'selected-incident-marker',
+  html: '<div class="selected-marker-pulse"></div><div class="selected-marker-pin"></div>',
+  iconSize: [36, 36],
+  iconAnchor: [18, 18],
+  popupAnchor: [0, -20]
+});
+
 const stationIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
@@ -70,20 +116,23 @@ const AUTH_URL = 'http://localhost:5005';
 const MQTT_WS_URL = 'ws://localhost:9001';
 
 // Component to dynamically pan/zoom Leaflet maps
-function ChangeView({ center }) {
+function ChangeView({ center, selectedId }) {
   const map = useMap();
   const prevCenterRef = useRef([null, null]);
+  const prevSelectedIdRef = useRef(null);
 
   useEffect(() => {
     if (center && center[0] && center[1]) {
       const [lat, lng] = center;
       const [prevLat, prevLng] = prevCenterRef.current;
-      if (lat !== prevLat || lng !== prevLng) {
-        map.setView(center, map.getZoom());
+      const selectionChanged = selectedId !== prevSelectedIdRef.current;
+      if (lat !== prevLat || lng !== prevLng || selectionChanged) {
+        map.setView(center, selectionChanged ? 15 : map.getZoom());
         prevCenterRef.current = [lat, lng];
+        prevSelectedIdRef.current = selectedId;
       }
     }
-  }, [center, map]);
+  }, [center, selectedId, map]);
   return null;
 }
 
@@ -151,6 +200,7 @@ export default function App() {
   
   // Dispatch Panel State
   const [selectedIncidentId, setSelectedIncidentId] = useState(null);
+  const lastOpenedPopupIdRef = useRef(null);
   const [nearestResources, setNearestResources] = useState([]);
   const [dispatchCallState, setDispatchCallState] = useState('idle'); // idle, incoming, connected
   const [incomingOffer, setIncomingOffer] = useState(null);
@@ -956,7 +1006,7 @@ export default function App() {
                         <div 
                           key={inc.id} 
                           className={`incident-card ${inc.type} ${selectedIncidentId === inc.id ? 'selected' : ''}`}
-                          onClick={() => setSelectedIncidentId(inc.id)}
+                          onClick={() => { lastOpenedPopupIdRef.current = null; setSelectedIncidentId(inc.id); }}
                         >
                           <div className="incident-card-header">
                             <span style={{ fontWeight: '700', fontSize: '13px' }}>{inc.id}</span>
@@ -976,7 +1026,7 @@ export default function App() {
                   <h2>Regional Incident Tracking Map</h2>
                   <div className="map-canvas-container" style={{ flex: 1, minHeight: '400px' }}>
                     <MapContainer center={dispatchMapCenter} zoom={13} style={{ height: '100%', minHeight: '400px', width: '100%', borderRadius: '8px', zIndex: 1 }}>
-                      <ChangeView center={dispatchMapCenter} />
+                      <ChangeView center={dispatchMapCenter} selectedId={selectedIncidentId} />
                       <TileLayer
                         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -994,11 +1044,11 @@ export default function App() {
                           </Marker>
                         ))}
 
-                      {/* Active incidents */}
-                      {incidents.filter(inc => inc.status !== 'Resolved').map(inc => {
+                      {/* Active incidents (excluding selected to avoid overlap) */}
+                      {incidents.filter(inc => inc.status !== 'Resolved' && inc.id !== selectedIncidentId).map(inc => {
                         if (!inc.location) return null;
                         return (
-                          <Marker key={inc.id} position={[inc.location.lat, inc.location.lng]} icon={incidentIcon}>
+                          <Marker key={inc.id} position={[inc.location.lat, inc.location.lng]} icon={getIncidentIcon(inc.type)}>
                             <Popup>
                               <strong>Emergency: {inc.id}</strong><br/>
                               Type: {inc.type}<br/>
@@ -1022,6 +1072,29 @@ export default function App() {
                             </Marker>
                           );
                         })}
+
+                      {/* Selected incident marker - rendered LAST so it's always on top */}
+                      {selectedIncident && selectedIncident.location && (
+                        <Marker
+                          key={`selected-${selectedIncident.id}`}
+                          position={[selectedIncident.location.lat, selectedIncident.location.lng]}
+                          icon={selectedIncidentIcon}
+                          zIndexOffset={1000}
+                          ref={(ref) => {
+                            if (ref && lastOpenedPopupIdRef.current !== selectedIncident.id) {
+                              lastOpenedPopupIdRef.current = selectedIncident.id;
+                              setTimeout(() => ref.openPopup(), 150);
+                            }
+                          }}
+                        >
+                          <Popup>
+                            <strong>🚨 Selected: {selectedIncident.id}</strong><br/>
+                            Type: {selectedIncident.type}<br/>
+                            Status: {selectedIncident.status}<br/>
+                            Reporter: {selectedIncident.reportedBy}
+                          </Popup>
+                        </Marker>
+                      )}
 
                       {/* Connection paths */}
                       {responders
