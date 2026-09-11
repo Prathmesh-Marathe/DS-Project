@@ -176,6 +176,23 @@ export default function App() {
   const dispatcherRemoteVideoRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
+  const callRoomIdRef = useRef(null);
+
+  // Stable stream attachment — only runs when stream changes OR when the video element mounts
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
+    }
+  }, [localStream, citizenCallState]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(() => {});
+    }
+  }, [remoteStream, dispatchCallState]);
 
   // Sync citizenName on user object loads
   useEffect(() => {
@@ -244,26 +261,39 @@ export default function App() {
 
     s.on('peer-joined', async ({ socketId }) => {
       console.log('[Socket] Peer joined call room, starting WebRTC negotiation. peerSocketId:', socketId);
-      
-      const pc = new RTCPeerConnection();
+
+      // Wait for local stream if it's still being acquired (getUserMedia race guard)
+      let waited = 0;
+      while (!localStreamRef.current && waited < 5000) {
+        await new Promise(r => setTimeout(r, 100));
+        waited += 100;
+      }
+
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
       pcRef.current = pc;
-      
+
       const stream = localStreamRef.current;
       if (stream) {
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        console.log('[WebRTC] Added', stream.getTracks().length, 'tracks to peer connection');
+      } else {
+        console.warn('[WebRTC] No local stream available when peer joined!');
       }
-      
+
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           s.emit('webrtc-signal', { targetSocketId: socketId, signal: { candidate: event.candidate } });
         }
       };
-      
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      
+
       setCitizenCallState('connected');
       s.emit('webrtc-signal', { targetSocketId: socketId, signal: { type: 'offer', sdp: offer } });
+      console.log('[WebRTC] Offer sent to dispatcher socket:', socketId);
     });
 
     s.on('webrtc-signal', async ({ signal, senderSocketId }) => {
@@ -278,26 +308,36 @@ export default function App() {
 
       if (signal.type === 'offer') {
         console.log('[Socket] Received WebRTC offer from citizen, accepting...');
-        const pc = new RTCPeerConnection();
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
         pcRef.current = pc;
-        
+
         pc.ontrack = (event) => {
           console.log('[WebRTC] Received remote stream track!', event.streams);
-          setRemoteStream(event.streams[0]);
+          const stream = event.streams[0];
+          remoteStreamRef.current = stream;
+          setRemoteStream(stream);
+          // Directly attach to video element as a fallback in case useEffect timing is off
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+            remoteVideoRef.current.play().catch(() => {});
+          }
         };
-        
+
         pc.onicecandidate = (event) => {
           if (event.candidate) {
             s.emit('webrtc-signal', { targetSocketId: senderSocketId, signal: { candidate: event.candidate } });
           }
         };
-        
+
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           s.emit('webrtc-signal', { targetSocketId: senderSocketId, signal: { type: 'answer', sdp: answer } });
           setDispatchCallState('connected');
+          console.log('[WebRTC] Answer sent to citizen, call connected');
         } catch (e) {
           console.error('[WebRTC] Failed to set remote description or create answer:', e);
         }
@@ -415,30 +455,45 @@ export default function App() {
     setCitizenCallState('calling');
     const roomId = `call-${Date.now()}`;
     setCallRoomId(roomId);
-    
-    socket.emit('join-call-room', { roomId });
+    callRoomIdRef.current = roomId;
 
+    // STEP 1: Acquire local media FIRST before joining the room
+    // This ensures localStreamRef.current is populated before peer-joined fires
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
       setLocalStream(stream);
+      console.log('[WebRTC] Got local media stream with', stream.getTracks().length, 'tracks');
     } catch (e) {
       console.error('Failed to get user media. Falling back to mock stream.', e);
       addToast('Real camera access failed or blocked', 'error');
-      
+
       const canvas = document.createElement('canvas');
       canvas.width = 640;
       canvas.height = 480;
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = 'black';
-      ctx.fillRect(0,0,640,480);
-      const stream = canvas.captureStream(30);
+      let frame = 0;
+      const drawFrame = () => {
+        frame++;
+        ctx.fillStyle = `hsl(${frame % 360}, 70%, 20%)`;
+        ctx.fillRect(0, 0, 640, 480);
+        ctx.fillStyle = 'white';
+        ctx.font = '24px monospace';
+        ctx.fillText('Mock Stream - No Camera', 120, 240);
+        requestAnimationFrame(drawFrame);
+      };
+      drawFrame();
+      const stream = canvas.captureStream(15);
       localStreamRef.current = stream;
       setLocalStream(stream);
     }
-    
-    // Broadcast incoming call event directly to the 'dispatch' room so operators see the prompt
+
+    // STEP 2: Join the call room (now media is ready)
+    socket.emit('join-call-room', { roomId });
+
+    // STEP 3: Notify the dispatcher about the incoming call
     socket.emit('webrtc-signal', { roomId: 'dispatch', signal: { type: 'incoming-offer', roomId } });
+    console.log('[WebRTC] Call initiated, room:', roomId);
   };
 
   const endCall = () => {
@@ -851,7 +906,7 @@ export default function App() {
                     )}
                     {citizenCallState !== 'idle' && (
                       <div className="video-call-box">
-                        <video className="video-element" ref={el => { if (el && localStream) el.srcObject = localStream; }} autoPlay playsInline muted />
+                        <video className="video-element" ref={localVideoRef} autoPlay playsInline muted />
                         <div className="call-overlay-text">Local WebRTC Stream</div>
                       </div>
                     )}
@@ -1053,7 +1108,7 @@ export default function App() {
                   ) : dispatchCallState === 'connected' ? (
                     <div>
                       <div className="video-call-box">
-                        <video className="video-element" ref={el => { if (el && remoteStream) el.srcObject = remoteStream; }} autoPlay playsInline muted />
+                        <video className="video-element" ref={remoteVideoRef} autoPlay playsInline muted />
                         <div className="call-overlay-text">Incoming WebRTC Stream</div>
                       </div>
                       <button className="btn btn-secondary" style={{ marginTop: '8px' }} onClick={endCall}>
