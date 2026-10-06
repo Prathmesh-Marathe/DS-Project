@@ -4,14 +4,35 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
+const LamportClock = require('./lamport');
 
 const app = express();
 const PORT = process.env.PORT || 5003;
 const REGISTRY_URL = process.env.REGISTRY_URL || 'http://localhost:5000';
 const MONGO_URI = process.env.MONGODB_URI;
+const SERVICE_ID = process.env.SERVICE_ID || 'resource-1';
 
 app.use(cors());
 app.use(express.json());
+
+// ─── Chapter 3: Lamport Clock ──────────────────────────────────────────────────
+const lamport = new LamportClock(SERVICE_ID);
+let clockOffset = 0;
+
+// Cristian's Clock Sync
+const syncClock = async () => {
+  try {
+    const T1 = Date.now();
+    const ts = lamport.send();
+    const resp = await axios.post(`${REGISTRY_URL}/clock-sync`, { nodeId: SERVICE_ID, clientTime: T1, localClock: ts.ts }, { timeout: 3000 });
+    const T3 = Date.now();
+    clockOffset = resp.data.serverTime - T1 - (T3 - T1) / 2;
+    if (resp.data.lamportTs !== undefined) lamport.receive(resp.data.lamportTs);
+    console.log(`[Resource | Clock Sync] Offset: ${clockOffset.toFixed(1)}ms`);
+  } catch (err) {
+    console.warn(`[Resource | Clock Sync] Failed: ${err.message}`);
+  }
+};
 
 // --- Database Configuration (Mongo + JSON Fallback) ---
 let useMongo = false;
@@ -104,18 +125,28 @@ const connectDB = async () => {
 
 // Helper: Haversine distance for coordinates
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
-  const R = 6371; // Earth radius in km
+  const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
+  const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 };
 
 // --- API Endpoints ---
+
+// ─── Chapter 3: Snapshot state endpoint (Chandy-Lamport participant) ──────────
+app.get('/snapshot-state', (req, res) => {
+  res.json({
+    nodeId: SERVICE_ID,
+    lamportClock: lamport.getState(),
+    clockOffset_ms: clockOffset,
+    recordedAt: new Date().toISOString()
+  });
+});
 
 // Get all resources
 app.get('/resources', async (req, res) => {
@@ -255,17 +286,24 @@ app.post('/resources/release', async (req, res) => {
 // Start service
 app.listen(PORT, async () => {
   await connectDB();
-  console.log(`Resource Service running on port ${PORT}`);
+  console.log(`[Resource | ${SERVICE_ID}] Resource Service running on port ${PORT}`);
+  console.log(`[Resource] Chapter 3 features enabled:`);
+  console.log(`[Resource]   \u2713 Lamport Logical Clocks (resource ops timestamped)`);
+  console.log(`[Resource]   \u2713 Cristian's Clock Sync (periodic offset correction)`);
 
   // Dynamic Self-Registration in Naming Registry
   const registerWithRetry = async () => {
     try {
+      const ts = lamport.send();
       await axios.post(`${REGISTRY_URL}/register`, {
         type: 'service',
         name: 'resource-service',
-        url: process.env.SERVICE_URL || `http://localhost:${PORT}`
+        url: process.env.SERVICE_URL || `http://localhost:${PORT}`,
+        lamportTs: ts.ts
       });
       console.log('[Resource Service] Self-registered with Naming Registry successfully');
+      syncClock();
+      setInterval(syncClock, 30000);
     } catch (err) {
       console.error('[Resource Service] Self-registration with Registry failed:', err.message, '- Retrying in 5s...');
       setTimeout(registerWithRetry, 5000);

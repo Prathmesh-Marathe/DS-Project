@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "aedes": "^0.42.0",
+    "axios": "^1.6.2",
     "cors": "^2.8.5",
     "derrcs-root": "file:../..",
     "express": "^4.19.2",

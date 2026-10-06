@@ -76,3 +76,59 @@ When a responder's connectivity is lost:
 2. The responder client scans for neighboring responders over WebRTC data channels (established when both were online, or simulated locally).
 3. If a neighbor has an active connection, the offline responder relays its queued updates to the neighbor, who forwards them to the broker.
 4. Upon reconnection, the responder flushes any remaining items in its queue to the broker. Idempotency keys prevent duplicate processing.
+
+---
+
+## 5. Chapter 3 — Synchronization
+
+### 5.1 Clock Synchronization (Cristian's Algorithm)
+- **Where**: All services (`incident-service`, `resource-service`, `dispatch-service`, `broker-signaling`) periodically call `POST /clock-sync` on the registry.
+- **How**: Each service records `T1` (send time), receives `T2` (server time), records `T3` (receive time). Offset = `T2 - T1 - RTT/2`.
+- **Effect**: All services converge toward the registry's wall-clock time, compensating for clock drift.
+
+### 5.2 Lamport's Logical Clocks (Total Ordering)
+- **Where**: Every service (`registry`, `incident`, `dispatch`, `resource`, `broker`) maintains a `LamportClock` instance (`lamport.js`).
+- **Rules**:
+  - **Internal event**: `clock += 1`
+  - **Send**: `clock += 1`, attach `lamportTs` to the HTTP body / MQTT payload
+  - **Receive**: `clock = max(local, received) + 1`
+- **Effect**: All events (incident create, dispatch, resource claim, MQTT publish) carry a Lamport timestamp enabling total ordering of distributed events.
+
+### 5.3 Vector Clocks (Causal Ordering)
+- **Where**: Registry Service tracks **responder location updates** with vector clocks (`vectorClock.js`).
+- **Rules**: Each update carries a `vectorTs` dictionary `{ nodeId: counter }`. On receive: `for each k: local[k] = max(local[k], received[k])`, then increment own.
+- **Effect**: The registry detects **stale** (already-superseded) location updates and rejects them. **Concurrent** updates are resolved via last-writer-wins.
+- **Comparison**: `VectorClock.compare(va, vb)` returns `'before' | 'after' | 'concurrent' | 'equal'`.
+
+### 5.4 Global State Snapshot (Chandy-Lamport Algorithm)
+- **Where**: Registry Service (`POST /snapshot`).
+- **Algorithm**:
+  1. Registry (initiator) records its own local state (services table, responders table, clocks).
+  2. Registry sends `GET /snapshot-state` to all registered services (marker messages).
+  3. Each service returns its current in-memory state.
+  4. Registry assembles the **consistent global cut**.
+- **Trigger**: Automatically triggered by the elected coordinator via broker-signaling.
+
+### 5.5 Election Algorithm (Bully Algorithm)
+- **Where**: Broker-Signaling Service (`election.js`).
+- **Priority Order**: `registry-1(100) > broker-1(90) > dispatch-1(50) > incident-1(40) > resource-1(30) > auth-1(20)`.
+- **Algorithm**:
+  1. Node detects coordinator is dead (beacon timeout).
+  2. Sends `ELECTION` message to all higher-priority nodes.
+  3. If no response in 2s → declares itself coordinator (`VICTORY`).
+  4. Higher-priority node responds with `OK` and starts its own election.
+- **Messages**: Relayed via Socket.IO events (`election-message`, `election-ok`, `election-coordinator`).
+- **REST**: `POST /election/start` to manually trigger, `GET /election/state` to inspect.
+
+### 5.6 Mutual Exclusion — Token Ring Algorithm
+- **Where**: Dispatch Service (`mutex.js`).
+- **Problem solved**: Two simultaneous dispatch requests could double-claim the same resource.
+- **Algorithm**: A single **token** circulates the logical ring. Only the token-holder can enter the critical section (resource claim + incident status update).
+- **Fairness (Lodha-Kshemkalyani)**: Requests are queued in **Lamport timestamp order** (earliest logical timestamp gets served first), ensuring FIFO fairness even across concurrent arrivals.
+- **Deadlock prevention**: Mutex is always released in `finally {}` even on errors.
+
+### 5.7 Beacon Protocol (Heartbeat / Failure Detector)
+- **Where**: `broker-signaling/beacon.js` (client) + `registry/index.js` `/beacon` and `/beacon/alive` endpoints (server).
+- **Mechanism**: Each service sends a heartbeat `POST /beacon` every 5 seconds.
+- **Failure detection**: If no beacon received within `15s` → service declared dead → election triggered.
+- **Clock sync piggybacked**: Each beacon also performs Cristian's clock sync (measures RTT and computes offset).

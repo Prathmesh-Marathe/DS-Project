@@ -16,6 +16,9 @@ services:
     container_name: derrcs-registry
     ports:
       - "5000:5000"
+    environment:
+      - SERVICE_ID=registry-1
+      - SERVICE_PRIORITY=100
     networks:
       - derrcs-network
     restart: always
@@ -30,6 +33,8 @@ services:
       - REGISTRY_URL=http://registry-service:5000
       - MONGODB_URI=mongodb://mongodb:27017/derrcs
       - SERVICE_URL=http://auth-service:5005
+      - SERVICE_ID=auth-1
+      - SERVICE_PRIORITY=20
     depends_on:
       - mongodb
       - registry-service
@@ -44,6 +49,10 @@ services:
       - "1883:1883"
       - "9001:9001"
       - "5004:5004"
+    environment:
+      - REGISTRY_URL=http://registry-service:5000
+      - SERVICE_ID=broker-1
+      - SERVICE_PRIORITY=90
     networks:
       - derrcs-network
     restart: always
@@ -58,6 +67,8 @@ services:
       - REGISTRY_URL=http://registry-service:5000
       - MONGODB_URI=mongodb://mongodb:27017/derrcs
       - SERVICE_URL=http://resource-service:5003
+      - SERVICE_ID=resource-1
+      - SERVICE_PRIORITY=30
     depends_on:
       - mongodb
       - registry-service
@@ -76,6 +87,8 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017/derrcs
       - MQTT_URL=mqtt://broker-signaling:1883
       - SERVICE_URL=http://incident-service:5001
+      - SERVICE_ID=incident-1
+      - SERVICE_PRIORITY=40
     depends_on:
       - mongodb
       - registry-service
@@ -94,6 +107,8 @@ services:
       - REGISTRY_URL=http://registry-service:5000
       - MQTT_URL=mqtt://broker-signaling:1883
       - SERVICE_URL=http://dispatch-service:5002
+      - SERVICE_ID=dispatch-1
+      - SERVICE_PRIORITY=50
     depends_on:
       - registry-service
       - broker-signaling
