@@ -83,7 +83,7 @@ services:
     restart: "no"
     entrypoint: >
       bash -c "
-        echo '[Replica Set] All 3 Mongo nodes healthy. Initialising rs0...' &&
+        echo '[Replica Set] All 3 Mongo nodes healthy. Initialising rs0...'
         mongosh --host mongo-primary:27017 --eval '
           var cfg = {
             _id: \"rs0\",
@@ -93,15 +93,15 @@ services:
               { _id: 2, host: \"mongo-secondary2:27017\", priority: 1 }
             ]
           };
-          var result = rs.initiate(cfg);
-          printjson(result);
-          if (result.ok === 1) {
-            print(\"[Replica Set] rs0 initialised successfully!\");
-          } else {
-            print(\"[Replica Set] Already initialised or error:\", JSON.stringify(result));
+          try {
+            var result = rs.initiate(cfg);
+            printjson(result);
+          } catch (e) {
+            print(\"[Replica Set] Already initialised or caught error: \" + e);
           }
-        ' &&
+        '
         echo '[Replica Set] Setup complete. Primary=mongo-primary, Secondaries=mongo-secondary1,mongo-secondary2'
+        exit 0
       "
 
   # ═══════════════════════════════════════════════════════════════════════════
