@@ -11,6 +11,11 @@ const REGISTRY_URL = process.env.REGISTRY_URL || 'http://localhost:5000';
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://localhost:1883';
 const SERVICE_ID = process.env.SERVICE_ID || 'dispatch-1';
 
+// ─── Unit 4: Serverless Architecture (AWS Lambda via API Gateway) ─────────────
+// Every successful dispatch triggers a stateless serverless function.
+// The Lambda function is event-driven, pay-per-execution, and auto-scales.
+const LAMBDA_ENDPOINT = process.env.LAMBDA_DISPATCH_URL || 'https://13d0ylm0a8.execute-api.ap-south-1.amazonaws.com/prod/dispatch-log';
+
 app.use(cors());
 app.use(express.json());
 
@@ -266,6 +271,24 @@ app.post('/dispatch/assign', async (req, res) => {
       resource: claimedResource,
       lamportTs: lamport.send().ts
     });
+
+    // ─── Unit 4: Serverless — Fire-and-forget Lambda call (async, non-blocking) ──
+    // After the response is sent, we asynchronously notify the serverless
+    // dispatch logger. This is fire-and-forget: Lambda is stateless and
+    // event-driven — it logs to CloudWatch without affecting the dispatch flow.
+    const lambdaPayload = {
+      incidentId,
+      resourceId,
+      resourceName: claimedResource.name,
+      incidentType: updatedIncident.type,
+      location: updatedIncident.location,
+      dispatchedAt: new Date().toISOString(),
+      lamportTs: lamport.send().ts,
+      dispatchServiceId: SERVICE_ID
+    };
+    axios.post(LAMBDA_ENDPOINT, lambdaPayload, { timeout: 5000 })
+      .then(r => console.log(`[Dispatch | Serverless] Lambda logged dispatch event. CloudWatch status: ${r.status}`))
+      .catch(e => console.warn(`[Dispatch | Serverless] Lambda call failed (non-critical): ${e.message}`));
 
   } catch (err) {
     console.error('[Dispatch Service] Error executing assignment transaction:', err.message);

@@ -599,3 +599,12 @@ h3 {
     opacity: 0;
   }
 }
+
+/* S3 upload spinner */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}

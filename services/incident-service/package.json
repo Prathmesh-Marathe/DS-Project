@@ -7,12 +7,16 @@
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
+    "@aws-sdk/s3-request-presigner": "^3.1146.0",
     "axios": "^1.6.8",
     "cors": "^2.8.5",
     "derrcs-root": "file:../..",
     "express": "^4.19.2",
     "mongoose": "^8.2.1",
-    "mqtt": "^5.3.5"
+    "mqtt": "^5.3.5",
+    "multer": "^2.4.0",
+    "multer-s3": "^3.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

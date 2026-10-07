@@ -20,4 +20,5 @@ yarn-error.log*
 .idea/
 .DS_Store
 *.swp
-*.swo
+*.swocredentials.txt
+credentials.txt

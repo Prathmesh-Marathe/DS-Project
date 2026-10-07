@@ -1,6 +1,6 @@
 # DERRCS: Distributed Emergency Response & Resource Coordination System
 
-DERRCS is a distributed emergency dispatch and response simulation dashboard designed to address distributed system design challenges under emergency constraint conditions. The application enables real-time peer-to-peer multimedia calling, atomic capacity allocation, naming registries, dynamic service lookups, and fault-tolerant edge updates.
+DERRCS is a distributed emergency dispatch and response s   imulation dashboard designed to address distributed system design challenges under emergency constraint conditions. The application enables real-time peer-to-peer multimedia calling, atomic capacity allocation, naming registries, dynamic service lookups, and fault-tolerant edge updates.
 
 This project is submitted in fulfillment of the **Distributed Systems Course Project Evaluation (FA-1)** requirements.
 

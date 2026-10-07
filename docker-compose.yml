@@ -1,15 +1,114 @@
-version: '3.8'
 
 services:
-  mongodb:
-    image: mongo:latest
-    container_name: derrcs-mongodb
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # MongoDB Replica Set — 3 Nodes (Primary + 2 Secondaries)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Concept: Data Replication (Unit 4 — Scalability & Data Management)
+  # - Primary handles all writes and replicates to secondaries automatically
+  # - If Primary crashes → one Secondary auto-promotes (election within ~10s)
+  # - Read operations can be served from any node (read scaling)
+  # - Consistency model: Strong Consistency by default (reads from Primary)
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  mongo-primary:
+    image: mongo:7
+    container_name: derrcs-mongo-primary
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
     ports:
       - "27017:27017"
     volumes:
-      - mongo-data:/data/db
+      - mongo-primary-data:/data/db
     networks:
       - derrcs-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping').ok", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  mongo-secondary1:
+    image: mongo:7
+    container_name: derrcs-mongo-secondary1
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo-secondary1-data:/data/db
+    networks:
+      - derrcs-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping').ok", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  mongo-secondary2:
+    image: mongo:7
+    container_name: derrcs-mongo-secondary2
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--port", "27017"]
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongo-secondary2-data:/data/db
+    networks:
+      - derrcs-network
+    restart: always
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--eval", "db.adminCommand('ping').ok", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # One-shot container: waits for all 3 Mongo nodes to be ready,
+  # then initialises the replica set (runs rs.initiate()).
+  # Exits with code 0 once done — does NOT stay running.
+  mongo-setup:
+    image: mongo:7
+    container_name: derrcs-mongo-setup
+    depends_on:
+      mongo-primary:
+        condition: service_healthy
+      mongo-secondary1:
+        condition: service_healthy
+      mongo-secondary2:
+        condition: service_healthy
+    networks:
+      - derrcs-network
+    restart: "no"
+    entrypoint: >
+      bash -c "
+        echo '[Replica Set] All 3 Mongo nodes healthy. Initialising rs0...' &&
+        mongosh --host mongo-primary:27017 --eval '
+          var cfg = {
+            _id: \"rs0\",
+            members: [
+              { _id: 0, host: \"mongo-primary:27017\",    priority: 2 },
+              { _id: 1, host: \"mongo-secondary1:27017\", priority: 1 },
+              { _id: 2, host: \"mongo-secondary2:27017\", priority: 1 }
+            ]
+          };
+          var result = rs.initiate(cfg);
+          printjson(result);
+          if (result.ok === 1) {
+            print(\"[Replica Set] rs0 initialised successfully!\");
+          } else {
+            print(\"[Replica Set] Already initialised or error:\", JSON.stringify(result));
+          }
+        ' &&
+        echo '[Replica Set] Setup complete. Primary=mongo-primary, Secondaries=mongo-secondary1,mongo-secondary2'
+      "
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Application Services
+  # All services connect via replica set URI — automatic failover if
+  # Primary crashes; Mongoose driver reconnects to the new Primary.
+  # ═══════════════════════════════════════════════════════════════════════════
 
   registry-service:
     build: ./services/registry-service
@@ -22,6 +121,9 @@ services:
     networks:
       - derrcs-network
     restart: always
+    depends_on:
+      mongo-setup:
+        condition: service_completed_successfully
 
   auth-service:
     build: ./services/auth-service
@@ -31,13 +133,17 @@ services:
     environment:
       - PORT=5005
       - REGISTRY_URL=http://registry-service:5000
-      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      # Replica Set connection string — driver auto-routes writes to Primary,
+      # reads can be distributed across all nodes
+      - MONGODB_URI=mongodb://mongo-primary:27017,mongo-secondary1:27017,mongo-secondary2:27017/derrcs?replicaSet=rs0&readPreference=primaryPreferred
       - SERVICE_URL=http://auth-service:5005
       - SERVICE_ID=auth-1
       - SERVICE_PRIORITY=20
     depends_on:
-      - mongodb
-      - registry-service
+      mongo-setup:
+        condition: service_completed_successfully
+      registry-service:
+        condition: service_started
     networks:
       - derrcs-network
     restart: always
@@ -56,6 +162,8 @@ services:
     networks:
       - derrcs-network
     restart: always
+    depends_on:
+      - registry-service
 
   resource-service:
     build: ./services/resource-service
@@ -65,13 +173,15 @@ services:
     environment:
       - PORT=5003
       - REGISTRY_URL=http://registry-service:5000
-      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      - MONGODB_URI=mongodb://mongo-primary:27017,mongo-secondary1:27017,mongo-secondary2:27017/derrcs?replicaSet=rs0&readPreference=primaryPreferred
       - SERVICE_URL=http://resource-service:5003
       - SERVICE_ID=resource-1
       - SERVICE_PRIORITY=30
     depends_on:
-      - mongodb
-      - registry-service
+      mongo-setup:
+        condition: service_completed_successfully
+      registry-service:
+        condition: service_started
     networks:
       - derrcs-network
     restart: always
@@ -84,15 +194,23 @@ services:
     environment:
       - PORT=5001
       - REGISTRY_URL=http://registry-service:5000
-      - MONGODB_URI=mongodb://mongodb:27017/derrcs
+      - MONGODB_URI=mongodb://mongo-primary:27017,mongo-secondary1:27017,mongo-secondary2:27017/derrcs?replicaSet=rs0&readPreference=primaryPreferred
       - MQTT_URL=mqtt://broker-signaling:1883
       - SERVICE_URL=http://incident-service:5001
       - SERVICE_ID=incident-1
       - SERVICE_PRIORITY=40
+      # Unit 4: Distributed File System (AWS S3)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=ap-south-1
+      - S3_BUCKET=derrcs-incidents
     depends_on:
-      - mongodb
-      - registry-service
-      - broker-signaling
+      mongo-setup:
+        condition: service_completed_successfully
+      registry-service:
+        condition: service_started
+      broker-signaling:
+        condition: service_started
     networks:
       - derrcs-network
     restart: always
@@ -109,6 +227,9 @@ services:
       - SERVICE_URL=http://dispatch-service:5002
       - SERVICE_ID=dispatch-1
       - SERVICE_PRIORITY=50
+      # Unit 4: Serverless Architecture (AWS Lambda via API Gateway)
+      - LAMBDA_DISPATCH_URL=https://13d0ylm0a8.execute-api.ap-south-1.amazonaws.com/prod/dispatch-log
+      - AWS_REGION=ap-south-1
     depends_on:
       - registry-service
       - broker-signaling
@@ -135,5 +256,12 @@ networks:
   derrcs-network:
     driver: bridge
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Persistent volumes — one per Mongo node
+# Each node stores its own data independently.
+# Replication happens over the network, NOT via shared volumes.
+# ═══════════════════════════════════════════════════════════════════════════
 volumes:
-  mongo-data:
+  mongo-primary-data:
+  mongo-secondary1-data:
+  mongo-secondary2-data:

@@ -5,7 +5,21 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const mqtt = require('mqtt');
+const multer = require('multer');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const LamportClock = require('./lamport');
+
+// ─── Unit 4: Distributed File System (AWS S3) ────────────────────────────────
+// AWS S3 acts as a distributed object store — files are replicated across
+// multiple AWS availability zones, providing fault tolerance and location
+// transparency. Services access files via a global URL, not a local path.
+const S3_BUCKET = process.env.S3_BUCKET || 'derrcs-incidents';
+const AWS_REGION = process.env.AWS_REGION || 'ap-south-1';
+// Uses AWS default credential chain:
+// 1. process.env.AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (Docker / CI)
+// 2. ~/.aws/credentials (local dev via `aws configure`)
+const s3Client = new S3Client({ region: AWS_REGION });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB limit
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -51,6 +65,7 @@ const IncidentSchema = new mongoose.Schema({
   reportedBy: { type: String, required: true },
   region: { type: String, default: 'region-north' },
   assignedResourceId: { type: String, default: null },
+  s3PhotoUrl: { type: String, default: null }, // Unit 4: DFS — S3 object URL
   createdAt: { type: Date, default: Date.now }
 });
 let IncidentModel;
@@ -295,6 +310,72 @@ app.patch('/incidents/:id/status', async (req, res) => {
     res.json(updatedIncident);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Unit 4: Distributed File System — S3 Photo Upload ──────────────────────
+// Citizen uploads an evidence photo for an incident.
+// The file is stored in AWS S3 (distributed object store), not on local disk.
+// This demonstrates: location transparency, fault tolerance, scalability.
+app.post('/incidents/:id/upload', upload.single('photo'), async (req, res) => {
+  const { id } = req.params;
+  const uploadTs = lamport.tick();
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No photo file provided. Use form-data field name: photo' });
+  }
+
+  const fileKey = `incidents/${id}/${Date.now()}-${req.file.originalname}`;
+
+  try {
+    // Upload to S3 — distributed file system
+    const command = new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: fileKey,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype
+    });
+    await s3Client.send(command);
+
+    const s3PhotoUrl = `https://${S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${fileKey}`;
+    console.log(`[Incident | L:${uploadTs}] Photo uploaded to S3 DFS: ${s3PhotoUrl}`);
+
+    // Save S3 URL to incident record
+    let updatedIncident = null;
+    if (useMongo) {
+      updatedIncident = await IncidentModel.findOneAndUpdate({ id }, { s3PhotoUrl }, { new: true });
+    } else {
+      const list = await getIncidents();
+      const idx = list.findIndex(inc => inc.id === id);
+      if (idx !== -1) {
+        list[idx].s3PhotoUrl = s3PhotoUrl;
+        updatedIncident = list[idx];
+        await saveIncidents(list);
+      }
+    }
+
+    if (!updatedIncident) {
+      return res.status(404).json({ error: 'Incident not found' });
+    }
+
+    const sendTs = lamport.send();
+    res.json({
+      success: true,
+      incidentId: id,
+      s3PhotoUrl,
+      s3Key: fileKey,
+      bucket: S3_BUCKET,
+      region: AWS_REGION,
+      lamportTs: sendTs.ts,
+      dfs: {
+        concept: 'Unit 4 - Distributed File System',
+        provider: 'AWS S3',
+        description: 'File stored in distributed object store — replicated across AWS availability zones in ap-south-1'
+      }
+    });
+  } catch (err) {
+    console.error(`[Incident | S3 Upload] Error: ${err.message}`);
+    res.status(500).json({ error: `S3 upload failed: ${err.message}` });
   }
 });
 

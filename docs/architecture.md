@@ -132,3 +132,94 @@ When a responder's connectivity is lost:
 - **Mechanism**: Each service sends a heartbeat `POST /beacon` every 5 seconds.
 - **Failure detection**: If no beacon received within `15s` → service declared dead → election triggered.
 - **Clock sync piggybacked**: Each beacon also performs Cristian's clock sync (measures RTT and computes offset).
+
+---
+
+## 6. Unit 4 — Emerging Distributed Paradigms
+
+### 6.1 Distributed Web-Based Systems
+DERRCS is itself a distributed web-based system:
+- **REST/HTTP** for synchronous RPC between microservices
+- **MQTT over WebSocket** for asynchronous pub-sub from browser clients
+- **WebRTC** for peer-to-peer media streaming (citizen → dispatcher)
+- **React SPA** served by Vite communicates with 6 backend microservices across different ports
+
+### 6.2 Distributed Object-Based Systems
+The **Registry Service** (Port 5000) implements the core concept of a **Distributed Object Request Broker (ORB)**:
+- Services register themselves as named objects: `POST /register { name, url }`
+- Clients resolve objects by name: `GET /lookup/incident-service` → `{ url: "http://..." }`
+- This provides **location transparency** — callers do not hardcode endpoints
+- Equivalent to: CORBA Naming Service / DCOM Registry / Java RMI Registry
+
+### 6.3 Distributed File System — AWS S3
+- **Where**: `incident-service` `POST /incidents/:id/upload`
+- **Provider**: AWS S3 Bucket `derrcs-incidents` (ap-south-1)
+- **DFS Properties demonstrated**:
+  - **Location Transparency**: Files accessed via global URL, not local path
+  - **Fault Tolerance**: AWS S3 internally replicates data across ≥3 Availability Zones
+  - **Scalability**: No storage limit; capacity grows automatically
+- **Flow**: Citizen attaches photo → multipart upload to incident-service → service streams to S3 → S3 URL stored on incident document → visible on Dispatch board
+
+### 6.4 Serverless Architecture — AWS Lambda + API Gateway
+- **Function**: `derrcs-dispatch-logger` (Node.js 20.x, ap-south-1)
+- **Trigger**: `POST https://13d0ylm0a8.execute-api.ap-south-1.amazonaws.com/prod/dispatch-log`
+- **Invoked by**: `dispatch-service` fire-and-forget after every successful resource assignment
+- **Serverless Properties demonstrated**:
+  - **Stateless**: No in-memory state; each invocation is fully independent
+  - **Event-driven**: Only executes when a dispatch event fires
+  - **Pay-per-execution**: Zero cost when idle
+  - **Auto-scaling**: AWS auto-scales concurrent Lambda instances on load
+  - **No server management**: Runtime, OS, patching fully managed by AWS
+- **Logs**: All dispatch events persisted in AWS CloudWatch Logs → `/aws/lambda/derrcs-dispatch-logger`
+
+### 6.5 Data Replication — MongoDB Replica Set
+- **Configuration**: 3-node Replica Set (`rs0`)
+  - `mongo-primary` (Port 27017) — Primary: handles all writes
+  - `mongo-secondary1` (Port 27018) — Secondary: auto-synced replica
+  - `mongo-secondary2` (Port 27019) — Secondary: auto-synced replica
+- **Consistency Model**: Strong Consistency by default (reads from Primary). Configurable to Eventual Consistency with `readPreference=secondary`
+- **Failover**: If Primary crashes → Mongo driver detects within ~10s → election among secondaries → new Primary elected → services auto-reconnect
+- **Connection String**: `mongodb://mongo-primary:27017,mongo-secondary1:27017,mongo-secondary2:27017/derrcs?replicaSet=rs0`
+- **Write concern**: Default `{ w: 1 }` — can be raised to `{ w: "majority" }` for stronger durability guarantees
+
+```
+Write Flow:
+Client → mongo-primary (PRIMARY)
+              │
+              ├──replicates──→ mongo-secondary1 (SECONDARY)
+              └──replicates──→ mongo-secondary2 (SECONDARY)
+
+Failover Flow:
+mongo-primary CRASHES
+              │
+              └── Mongo election (< 10s)
+                        │
+                        └── mongo-secondary1 promoted to PRIMARY
+                                  │
+                                  └── Services auto-reconnect via replica set URI
+```
+
+---
+
+## 7. Distributed System Characteristics Audit
+
+| Characteristic | Status | Implementation |
+|---|---|---|
+| **Concurrency** | ✅ | 6 independent processes, no shared memory |
+| **No Global Clock** | ✅ | Lamport Clocks, Vector Clocks, Cristian's Algorithm |
+| **Independent Failures** | ✅ | Services retry on crash; DB has 3-node replica set |
+| **Network RPC** | ✅ | HTTP/REST between all services |
+| **Message Queue** | ✅ | MQTT (Aedes broker) — pub/sub |
+| **Stream Communication** | ✅ | WebRTC for live video/audio |
+| **Leader Election** | ✅ | Bully Algorithm (election.js) |
+| **Health Checks** | ✅ | Beacon Protocol (5s heartbeat, 15s timeout) |
+| **Retries** | ✅ | `registerWithRetry()` in every service |
+| **Mutual Exclusion** | ✅ | Token-Ring Mutex (dispatch critical section) |
+| **Service Discovery** | ✅ | Registry Service (dynamic name → URL resolution) |
+| **Distributed File System** | ✅ | AWS S3 (Unit 4) |
+| **Serverless Architecture** | ✅ | AWS Lambda + API Gateway (Unit 4) |
+| **Data Replication** | ✅ | MongoDB 3-node Replica Set (Unit 4) |
+| **Distributed Tracing** | ❌ | Not implemented |
+| **Data Sharding** | ❌ | Not implemented |
+| **Circuit Breakers** | ❌ | Not implemented |
+

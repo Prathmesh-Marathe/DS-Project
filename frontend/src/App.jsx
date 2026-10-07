@@ -18,7 +18,10 @@ import {
   Users,
   LogOut,
   Lock,
-  Trash2
+  Trash2,
+  Camera,
+  Image,
+  CloudUpload
 } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, Popup, Circle, Polyline, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -187,6 +190,12 @@ export default function App() {
   const [incidentType, setIncidentType] = useState('medical');
   const [citizenCallState, setCitizenCallState] = useState('idle'); // idle, calling, connected
   const [callRoomId, setCallRoomId] = useState(null);
+  // Unit 4: DFS — photo upload state
+  const [incidentPhoto, setIncidentPhoto] = useState(null);       // File object
+  const [photoPreview, setPhotoPreview] = useState(null);         // Object URL for preview
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [lastS3Url, setLastS3Url] = useState(null);
+  const photoInputRef = useRef(null);
   
   // Toast Notifications
   const [toasts, setToasts] = useState([]);
@@ -573,7 +582,7 @@ export default function App() {
     socket.emit('join-call-room', { roomId: callRoomId });
   };
 
-  // Citizen: Report Incident REST call
+  // Citizen: Report Incident REST call + S3 photo upload (Unit 4: DFS)
   const reportIncident = async (e) => {
     e.preventDefault();
     const payload = {
@@ -592,6 +601,32 @@ export default function App() {
 
       refreshData();
       addToast(`Incident reported! ID: ${res.id}`);
+
+      // Unit 4: DFS — upload photo to AWS S3 if citizen attached one
+      if (incidentPhoto && res.id) {
+        setPhotoUploading(true);
+        try {
+          const formData = new FormData();
+          formData.append('photo', incidentPhoto);
+          const uploadRes = await fetch(`${INCIDENT_URL}/incidents/${res.id}/upload`, {
+            method: 'POST',
+            body: formData
+          }).then(r => r.json());
+
+          if (uploadRes.success) {
+            setLastS3Url(uploadRes.s3PhotoUrl);
+            addToast(`📸 Photo uploaded to AWS S3 (DFS)!`, 'success');
+          } else {
+            addToast(`Photo upload failed: ${uploadRes.error}`, 'error');
+          }
+        } catch (uploadErr) {
+          addToast('S3 upload error: ' + uploadErr.message, 'error');
+        } finally {
+          setPhotoUploading(false);
+          setIncidentPhoto(null);
+          setPhotoPreview(null);
+        }
+      }
     } catch (err) {
       console.error('Failed to post incident via REST:', err);
       addToast('Error connecting to incident-service', 'error');
@@ -935,8 +970,61 @@ export default function App() {
                         <input type="number" step="0.0001" className="form-control" value={citizenLng} onChange={e => setCitizenLng(parseFloat(e.target.value))} />
                       </div>
                     </div>
-                    <button type="submit" className="btn" style={{ marginBottom: '12px' }}>
-                      <Send size={16} /> Report Emergency
+
+                    {/* Unit 4: Distributed File System — Photo Evidence Upload */}
+                    <div className="form-group">
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Camera size={14} /> Photo Evidence
+                        <span style={{ fontSize: '10px', color: 'var(--text-muted)', marginLeft: '4px' }}>(stored on AWS S3 — DFS)</span>
+                      </label>
+                      <input
+                        ref={photoInputRef}
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={e => {
+                          const file = e.target.files[0];
+                          if (file) {
+                            setIncidentPhoto(file);
+                            setPhotoPreview(URL.createObjectURL(file));
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '10px', border: '1px dashed rgba(255,255,255,0.2)' }}
+                        onClick={() => photoInputRef.current?.click()}
+                      >
+                        <CloudUpload size={16} />
+                        {incidentPhoto ? incidentPhoto.name : 'Click to attach photo'}
+                      </button>
+                      {photoPreview && (
+                        <div style={{ marginTop: '8px', position: 'relative' }}>
+                          <img
+                            src={photoPreview}
+                            alt="Preview"
+                            style={{ width: '100%', maxHeight: '140px', objectFit: 'cover', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.15)' }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => { setIncidentPhoto(null); setPhotoPreview(null); }}
+                            style={{ position: 'absolute', top: '6px', right: '6px', background: 'rgba(0,0,0,0.7)', border: 'none', color: 'white', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', fontSize: '14px', lineHeight: '24px', textAlign: 'center' }}
+                          >×</button>
+                        </div>
+                      )}
+                      {lastS3Url && (
+                        <div style={{ marginTop: '6px', fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <CheckCircle size={10} /> Uploaded to S3:
+                          <a href={lastS3Url} target="_blank" rel="noreferrer" style={{ color: '#10b981', textDecoration: 'underline', wordBreak: 'break-all' }}>
+                            {lastS3Url.split('/').slice(-1)[0]}
+                          </a>
+                        </div>
+                      )}
+                    </div>
+
+                    <button type="submit" className="btn" style={{ marginBottom: '12px' }} disabled={photoUploading}>
+                      {photoUploading ? <><RefreshCw size={16} className="spin" /> Uploading to S3...</> : <><Send size={16} /> Report Emergency</>}
                     </button>
                   </form>
 
@@ -1015,6 +1103,16 @@ export default function App() {
                           <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Type: {inc.type}</p>
                           <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Location: {inc.location?.lat?.toFixed(4) ?? 'N/A'}, {inc.location?.lng?.toFixed(4) ?? 'N/A'}</p>
                           <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Reporter: {inc.reportedBy}</p>
+                          {inc.s3PhotoUrl && (
+                            <div style={{ marginTop: '6px' }}>
+                              <a href={inc.s3PhotoUrl} target="_blank" rel="noreferrer">
+                                <img src={inc.s3PhotoUrl} alt="Evidence" style={{ width: '100%', maxHeight: '80px', objectFit: 'cover', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.1)' }} />
+                              </a>
+                              <p style={{ fontSize: '9px', color: '#10b981', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                                <CloudUpload size={9} /> S3 Evidence Photo (AWS DFS)
+                              </p>
+                            </div>
+                          )}
                         </div>
                       ))
                     )}
