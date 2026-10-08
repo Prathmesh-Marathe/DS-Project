@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-service
+  namespace: derrcs
+spec:
+  selector:
+    app: registry-service
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: derrcs
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - name: http
+      port: 5005
+      targetPort: 5005
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-service
+  namespace: derrcs
+spec:
+  selector:
+    app: resource-service
+  ports:
+    - name: http
+      port: 5003
+      targetPort: 5003
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-service
+  namespace: derrcs
+spec:
+  selector:
+    app: incident-service
+  ports:
+    - name: http
+      port: 5001
+      targetPort: 5001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dispatch-service
+  namespace: derrcs
+spec:
+  selector:
+    app: dispatch-service
+  ports:
+    - name: http
+      port: 5002
+      targetPort: 5002
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broker-signaling
+  namespace: derrcs
+spec:
+  selector:
+    app: broker-signaling
+  ports:
+    - name: mqtt
+      port: 1883
+      targetPort: 1883
+    - name: mqtt-ws
+      port: 9001
+      targetPort: 9001
+    - name: signaling-http
+      port: 5004
+      targetPort: 5004

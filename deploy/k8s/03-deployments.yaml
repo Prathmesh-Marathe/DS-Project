@@ -1,0 +1,227 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-service
+  namespace: derrcs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: registry-service
+  template:
+    metadata:
+      labels:
+        app: registry-service
+    spec:
+      containers:
+        - name: registry-service
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/registry-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          env:
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_PRIORITY
+              value: "100"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: derrcs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      containers:
+        - name: auth-service
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/auth-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5005
+          envFrom:
+            - configMapRef:
+                name: derrcs-config
+          env:
+            - name: PORT
+              value: "5005"
+            - name: NODE_OPTIONS
+              value: --experimental-global-webcrypto
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: derrcs-secrets
+                  key: MONGODB_URI
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_URL
+              value: http://auth-service:5005
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-service
+  namespace: derrcs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: resource-service
+  template:
+    metadata:
+      labels:
+        app: resource-service
+    spec:
+      containers:
+        - name: resource-service
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/resource-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5003
+          envFrom:
+            - configMapRef:
+                name: derrcs-config
+          env:
+            - name: PORT
+              value: "5003"
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: derrcs-secrets
+                  key: MONGODB_URI
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_URL
+              value: http://resource-service:5003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broker-signaling
+  namespace: derrcs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: broker-signaling
+  template:
+    metadata:
+      labels:
+        app: broker-signaling
+    spec:
+      containers:
+        - name: broker-signaling
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/broker-signaling:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 1883
+            - containerPort: 9001
+            - containerPort: 5004
+          envFrom:
+            - configMapRef:
+                name: derrcs-config
+          env:
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_PRIORITY
+              value: "90"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-service
+  namespace: derrcs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: incident-service
+  template:
+    metadata:
+      labels:
+        app: incident-service
+    spec:
+      containers:
+        - name: incident-service
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/incident-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5001
+          envFrom:
+            - configMapRef:
+                name: derrcs-config
+          env:
+            - name: PORT
+              value: "5001"
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: derrcs-secrets
+                  key: MONGODB_URI
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: derrcs-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: derrcs-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_URL
+              value: http://incident-service:5001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dispatch-service
+  namespace: derrcs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dispatch-service
+  template:
+    metadata:
+      labels:
+        app: dispatch-service
+    spec:
+      containers:
+        - name: dispatch-service
+          image: 027824090102.dkr.ecr.ap-south-1.amazonaws.com/derrcs/dispatch-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5002
+          envFrom:
+            - configMapRef:
+                name: derrcs-config
+          env:
+            - name: PORT
+              value: "5002"
+            - name: SERVICE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVICE_URL
+              value: http://dispatch-service:5002
+            - name: SERVICE_PRIORITY
+              value: "50"

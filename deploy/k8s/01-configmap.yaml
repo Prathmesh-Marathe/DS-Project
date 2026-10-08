@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: derrcs-config
+  namespace: derrcs
+data:
+  AWS_REGION: ap-south-1
+  S3_BUCKET: derrcs-incidents
+  REGISTRY_URL: http://registry-service:5000
+  MQTT_URL: mqtt://broker-signaling:1883
+  LAMBDA_DISPATCH_URL: https://13d0ylm0a8.execute-api.ap-south-1.amazonaws.com/prod/dispatch-log
